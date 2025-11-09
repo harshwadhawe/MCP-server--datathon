@@ -60,14 +60,23 @@ except ImportError:
     SLACK_AVAILABLE = False
     SlackClient = None
 
+# Try to import JIRA client (optional)
+try:
+    from .jira_client import JiraClient
+    JIRA_AVAILABLE = True
+except ImportError:
+    JIRA_AVAILABLE = False
+    JiraClient = None
+
 
 # Initialize MCP server
-mcp = FastMCP("Calendar & GitHub MCP Server")
+mcp = FastMCP("Calendar, GitHub, Slack & JIRA MCP Server")
 
 # Initialize components
 calendar_client: Optional[CalendarClient] = None
 github_client: Optional[GitHubClient] = None
 slack_client: Optional[SlackClient] = None
+jira_client: Optional[JiraClient] = None
 query_analyzer = QueryAnalyzer()
 context_formatter = ContextFormatter()
 gemini_client: Optional[GeminiClient] = None
@@ -138,6 +147,20 @@ def initialize_slack_client():
             slack_client = SlackClient()
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Slack client: {e}")
+
+
+def initialize_jira_client():
+    """Initialize the JIRA client."""
+    global jira_client
+    if jira_client is None:
+        if not JIRA_AVAILABLE:
+            raise RuntimeError(
+                "JIRA client not available. Install requests package and set JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN."
+            )
+        try:
+            jira_client = JiraClient()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize JIRA client: {e}")
 
 
 @mcp.tool()
@@ -761,16 +784,236 @@ def get_slack_mentions(days: int = 7) -> str:
 
 
 @mcp.tool()
-def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False, include_slack_context: bool = False) -> str:
+def get_jira_boards() -> str:
     """
-    Chat with the AI assistant about your calendar, GitHub, and Slack. This is a conversational interface
-    that uses Gemini AI to answer questions about your schedule, availability, events, GitHub activity, and Slack messages.
+    Get all JIRA boards.
+    
+    Returns:
+        Formatted string with board information
+    """
+    try:
+        initialize_jira_client()
+        
+        boards = jira_client.get_boards(max_results=50)
+        
+        if not boards:
+            return "No JIRA boards found."
+        
+        result_parts = [f"JIRA BOARDS ({len(boards)} total):\n"]
+        result_parts.append("-" * 50)
+        
+        base_url = jira_client.base_url
+        for i, board in enumerate(boards, 1):
+            board_id = board.get("id", "?")
+            name = board.get("name", "Unknown")
+            board_type = board.get("type", "Unknown")
+            board_url = f"{base_url}/jira/boards/{board_id}"
+            
+            location = board.get("location", {})
+            loc_type = location.get("type", "")
+            loc_name = location.get("name", "")
+            loc_suffix = f" | {loc_type}: {loc_name}" if loc_type and loc_name else ""
+            
+            result_parts.append(f"  {i}. [{board_id}] {name} ({board_type}){loc_suffix}")
+            result_parts.append(f"     URL: {board_url}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_boards: {e}", exc_info=True)
+        return f"Error fetching JIRA boards: {str(e)}"
+
+
+@mcp.tool()
+def get_jira_issues(board_id: Optional[int] = None, jql: Optional[str] = None, max_results: int = 50) -> str:
+    """
+    Get JIRA issues. Can filter by board or use JQL query.
+    
+    Args:
+        board_id: Optional board ID to filter issues
+        jql: Optional JQL query string
+        max_results: Maximum number of issues to return (default: 50)
+    
+    Returns:
+        Formatted string with issue information
+    """
+    try:
+        initialize_jira_client()
+        
+        if board_id:
+            issues_data = jira_client.get_board_issues(board_id, jql=jql, max_results=max_results)
+        elif jql:
+            issues_data = jira_client.search_issues(jql, max_results=max_results)
+        else:
+            # Get my assigned issues by default
+            issues_data = jira_client.get_my_issues(max_results=max_results)
+        
+        if not issues_data:
+            return "No JIRA issues found."
+        
+        result_parts = [f"JIRA ISSUES ({len(issues_data)} total):\n"]
+        result_parts.append("-" * 50)
+        
+        base_url = jira_client.base_url
+        for i, issue in enumerate(issues_data[:max_results], 1):
+            # Handle both direct issue objects and nested issue objects from board API
+            issue_obj = issue.get("fields", issue) if "fields" in issue else issue
+            
+            key = issue.get("key", "Unknown")
+            summary = issue_obj.get("summary", "No summary") if isinstance(issue_obj, dict) else "No summary"
+            status = issue_obj.get("status", {})
+            status_name = status.get("name", "Unknown") if isinstance(status, dict) else str(status)
+            
+            assignee = issue_obj.get("assignee", {})
+            assignee_name = assignee.get("displayName", "Unassigned") if isinstance(assignee, dict) else "Unassigned"
+            
+            issue_type = issue_obj.get("issuetype", {})
+            type_name = issue_type.get("name", "Unknown") if isinstance(issue_type, dict) else "Unknown"
+            
+            priority = issue_obj.get("priority", {})
+            priority_name = priority.get("name", "Medium") if isinstance(priority, dict) else "Medium"
+            
+            issue_url = f"{base_url}/browse/{key}"
+            
+            result_parts.append(f"  {i}. {key} - {summary[:80]}")
+            result_parts.append(f"     Type: {type_name} | Status: {status_name} | Priority: {priority_name}")
+            result_parts.append(f"     Assignee: {assignee_name}")
+            result_parts.append(f"     URL: {issue_url}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_issues: {e}", exc_info=True)
+        return f"Error fetching JIRA issues: {str(e)}"
+
+
+@mcp.tool()
+def get_jira_backlog(board_id: Optional[int] = None) -> str:
+    """
+    Get backlog items from JIRA boards.
+    
+    Args:
+        board_id: Optional board ID. If not provided, fetches from the first available board.
+    
+    Returns:
+        Formatted string with backlog item information
+    """
+    try:
+        initialize_jira_client()
+        
+        if board_id:
+            # Get backlog for specific board
+            backlog = jira_client.get_board_backlog(board_id, max_results=50)
+            board_name = f"Board {board_id}"
+        else:
+            # Get backlog from first available board
+            boards = jira_client.get_boards(max_results=5)
+            if not boards:
+                return "No JIRA boards found."
+            
+            first_board = boards[0]
+            board_id = first_board.get("id")
+            board_name = first_board.get("name", "Unknown")
+            backlog = jira_client.get_board_backlog(board_id, max_results=50)
+        
+        if not backlog:
+            return f"No backlog items found for {board_name}."
+        
+        result_parts = [f"JIRA BACKLOG ITEMS from '{board_name}' ({len(backlog)} total):\n"]
+        result_parts.append("-" * 50)
+        
+        base_url = jira_client.base_url
+        for i, issue in enumerate(backlog[:30], 1):
+            key = issue.get("key", "Unknown")
+            fields = issue.get("fields", {}) if "fields" in issue else issue
+            summary = fields.get("summary", "No summary") if isinstance(fields, dict) else "No summary"
+            status_obj = fields.get("status", {}) if isinstance(fields, dict) else {}
+            status_name = status_obj.get("name", "Unknown") if isinstance(status_obj, dict) else "Unknown"
+            
+            assignee = fields.get("assignee", {}) if isinstance(fields, dict) else {}
+            assignee_name = "Unassigned"
+            if isinstance(assignee, dict):
+                assignee_name = assignee.get("displayName", assignee.get("name", "Unassigned"))
+            
+            issue_url = f"{base_url}/browse/{key}"
+            
+            result_parts.append(f"  {i}. {key} - {summary[:80]}")
+            result_parts.append(f"     Status: {status_name} | Assignee: {assignee_name}")
+            result_parts.append(f"     URL: {issue_url}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_backlog: {e}", exc_info=True)
+        return f"Error fetching JIRA backlog: {str(e)}"
+
+
+@mcp.tool()
+def get_my_jira_issues(status: Optional[str] = None) -> str:
+    """
+    Get issues assigned to the current user.
+    
+    Args:
+        status: Optional status filter (e.g., "In Progress", "To Do")
+    
+    Returns:
+        Formatted string with assigned issue information
+    """
+    try:
+        initialize_jira_client()
+        
+        issues = jira_client.get_my_issues(status=status, max_results=50)
+        
+        if not issues:
+            status_msg = f" with status '{status}'" if status else ""
+            return f"No JIRA issues assigned to you{status_msg}."
+        
+        result_parts = [f"MY JIRA ISSUES ({len(issues)} total):\n"]
+        result_parts.append("-" * 50)
+        
+        base_url = jira_client.base_url
+        for i, issue in enumerate(issues, 1):
+            key = issue.get("key", "Unknown")
+            fields = issue.get("fields", {})
+            summary = fields.get("summary", "No summary")
+            status_obj = fields.get("status", {})
+            status_name = status_obj.get("name", "Unknown")
+            
+            issue_type = fields.get("issuetype", {})
+            type_name = issue_type.get("name", "Unknown")
+            
+            priority = fields.get("priority", {})
+            priority_name = priority.get("name", "Medium")
+            
+            issue_url = f"{base_url}/browse/{key}"
+            
+            result_parts.append(f"  {i}. {key} - {summary[:80]}")
+            result_parts.append(f"     Type: {type_name} | Status: {status_name} | Priority: {priority_name}")
+            result_parts.append(f"     URL: {issue_url}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_my_jira_issues: {e}", exc_info=True)
+        return f"Error fetching my JIRA issues: {str(e)}"
+
+
+@mcp.tool()
+def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False, include_slack_context: bool = False, include_jira_context: bool = False) -> str:
+    """
+    Chat with the AI assistant about your calendar, GitHub, Slack, and JIRA. This is a conversational interface
+    that uses Gemini AI to answer questions about your schedule, availability, events, GitHub activity, Slack messages, and JIRA issues.
     
     Args:
         message: Your message or question
         include_calendar_context: Whether to include calendar context in the response (default: True)
         include_github_context: Whether to include GitHub context in the response (default: False)
         include_slack_context: Whether to include Slack context in the response (default: False)
+        include_jira_context: Whether to include JIRA context in the response (default: False)
     
     Returns:
         AI assistant's response
@@ -794,6 +1037,16 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         if is_slack_query:
             include_slack_context = True
         
+        # Detect JIRA-related queries
+        is_jira_query = any(keyword in message_lower for keyword in 
+                          ['jira', 'jql', 'board', 'boards', 'sprint', 'sprints', 'ticket', 'tickets',
+                           'issue', 'issues', 'task', 'tasks', 'story', 'stories', 'bug', 'bugs',
+                           'assigned to me', 'my issues', 'my tickets'])
+        
+        # Auto-enable JIRA context if query mentions JIRA
+        if is_jira_query:
+            include_jira_context = True
+        
         # Use query domain to determine context needs
         if query_domain == 'github' or (query_domain == 'both' and not include_calendar_context):
             include_calendar_context = False
@@ -808,6 +1061,7 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         calendar_context = None
         github_context = None
         slack_context = None
+        jira_context = None
         correlation_context = None
         
         # Fetch calendar context (with caching, ranking, and summarization)
@@ -1305,6 +1559,190 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
             except Exception as e:
                 slack_context = f"Note: Could not fetch Slack context: {str(e)}"
         
+        # Fetch JIRA context if requested
+        if include_jira_context:
+            try:
+                initialize_jira_client()
+                
+                jira_context_parts = []
+                
+                # Get user info
+                try:
+                    user_info = jira_client.get_user_info()
+                    user_name = user_info.get('displayName', user_info.get('name', 'Unknown'))
+                    jira_context_parts.append(f"JIRA USER: {user_name}")
+                    jira_context_parts.append("")
+                except Exception:
+                    pass
+                
+                # Check what type of JIRA data is needed
+                needs_boards = any(keyword in message_lower for keyword in 
+                                  ['board', 'boards', 'sprint board'])
+                needs_backlog = any(keyword in message_lower for keyword in 
+                                   ['backlog', 'backlog items', 'backlog issues'])
+                needs_my_issues = any(keyword in message_lower for keyword in 
+                                     ['my issues', 'my tickets', 'assigned to me', 'my tasks', 'assigned'])
+                needs_issues = any(keyword in message_lower for keyword in 
+                                  ['issue', 'issues', 'ticket', 'tickets', 'task', 'tasks', 'story', 'stories', 'bug', 'bugs'])
+                
+                # Always fetch my assigned issues by default (unless only boards are requested)
+                # This ensures issues are available even if keyword detection misses them
+                fetch_issues = needs_my_issues or needs_issues or not needs_boards
+                
+                if fetch_issues:
+                    try:
+                        my_issues = jira_client.get_my_issues(max_results=30)
+                        if my_issues:
+                            jira_context_parts.append(f"MY JIRA ISSUES ({len(my_issues)} total):")
+                            jira_context_parts.append("-" * 50)
+                            for i, issue in enumerate(my_issues[:20], 1):
+                                key = issue.get("key", "Unknown")
+                                fields = issue.get("fields", {})
+                                summary = fields.get("summary", "No summary")
+                                status_obj = fields.get("status", {})
+                                status_name = status_obj.get("name", "Unknown") if isinstance(status_obj, dict) else str(status_obj)
+                                issue_type = fields.get("issuetype", {})
+                                type_name = issue_type.get("name", "Unknown") if isinstance(issue_type, dict) else "Unknown"
+                                priority = fields.get("priority", {})
+                                priority_name = priority.get("name", "Medium") if isinstance(priority, dict) else "Medium"
+                                
+                                # Get assignee info
+                                assignee = fields.get("assignee", {})
+                                assignee_name = "Unassigned"
+                                if isinstance(assignee, dict):
+                                    assignee_name = assignee.get("displayName", assignee.get("name", "Unassigned"))
+                                
+                                jira_context_parts.append(f"  {i}. {key} - {summary[:80]}")
+                                jira_context_parts.append(f"     Type: {type_name} | Status: {status_name} | Priority: {priority_name}")
+                                if assignee_name != "Unassigned":
+                                    jira_context_parts.append(f"     Assignee: {assignee_name}")
+                                jira_context_parts.append("")
+                        else:
+                            jira_context_parts.append("MY JIRA ISSUES: No issues assigned to you.")
+                            jira_context_parts.append("")
+                    except Exception as e:
+                        error_msg = str(e)
+                        # Don't show technical error details to user, just a friendly message
+                        if "410" in error_msg or "deprecated" in error_msg.lower():
+                            jira_context_parts.append("Note: Unable to fetch assigned issues due to API limitations. Trying alternative method...")
+                            # Try getting issues from boards as fallback
+                            try:
+                                boards = jira_client.get_boards(max_results=3)
+                                if boards:
+                                    jira_context_parts.append("Note: Showing issues from available boards instead.")
+                                    jira_context_parts.append("")
+                            except:
+                                pass
+                        else:
+                            jira_context_parts.append(f"Note: Could not fetch my issues. {error_msg[:100]}")
+                        jira_context_parts.append("")
+                        # Log the full error for debugging
+                        logger.error(f"Error fetching JIRA issues: {e}", exc_info=True)
+                
+                # Get backlog items if requested
+                if needs_backlog:
+                    try:
+                        # Get boards first to find which board to get backlog from
+                        boards = jira_client.get_boards(max_results=10)
+                        if boards:
+                            # Try to get backlog from the first board (or all boards if multiple)
+                            backlog_issues = []
+                            for board in boards[:3]:  # Try first 3 boards
+                                try:
+                                    board_id = board.get("id")
+                                    board_name = board.get("name", "Unknown")
+                                    if board_id:
+                                        backlog = jira_client.get_board_backlog(board_id, max_results=30)
+                                        if backlog:
+                                            backlog_issues.extend(backlog)
+                                except Exception as e:
+                                    # Continue to next board if this one fails
+                                    continue
+                            
+                            if backlog_issues:
+                                jira_context_parts.append(f"JIRA BACKLOG ITEMS ({len(backlog_issues)} total):")
+                                jira_context_parts.append("-" * 50)
+                                for i, issue in enumerate(backlog_issues[:20], 1):
+                                    key = issue.get("key", "Unknown")
+                                    fields = issue.get("fields", {}) if "fields" in issue else issue
+                                    summary = fields.get("summary", "No summary") if isinstance(fields, dict) else "No summary"
+                                    status_obj = fields.get("status", {}) if isinstance(fields, dict) else {}
+                                    status_name = status_obj.get("name", "Unknown") if isinstance(status_obj, dict) else "Unknown"
+                                    assignee = fields.get("assignee", {}) if isinstance(fields, dict) else {}
+                                    assignee_name = "Unassigned"
+                                    if isinstance(assignee, dict):
+                                        assignee_name = assignee.get("displayName", assignee.get("name", "Unassigned"))
+                                    
+                                    jira_context_parts.append(f"  {i}. {key} - {summary[:80]}")
+                                    jira_context_parts.append(f"     Status: {status_name} | Assignee: {assignee_name}")
+                                    jira_context_parts.append("")
+                            else:
+                                jira_context_parts.append("JIRA BACKLOG: No backlog items found.")
+                                jira_context_parts.append("")
+                        else:
+                            jira_context_parts.append("JIRA BACKLOG: No boards found to fetch backlog from.")
+                            jira_context_parts.append("")
+                    except Exception as e:
+                        jira_context_parts.append(f"Note: Could not fetch backlog: {str(e)}")
+                        jira_context_parts.append("")
+                        logger.error(f"Error fetching JIRA backlog: {e}", exc_info=True)
+                
+                # Get boards if requested
+                if needs_boards:
+                    try:
+                        boards = jira_client.get_boards(max_results=20)
+                        if boards:
+                            jira_context_parts.append(f"JIRA BOARDS ({len(boards)} total):")
+                            jira_context_parts.append("-" * 50)
+                            for i, board in enumerate(boards[:10], 1):
+                                board_id = board.get("id", "?")
+                                name = board.get("name", "Unknown")
+                                board_type = board.get("type", "Unknown")
+                                jira_context_parts.append(f"  {i}. [{board_id}] {name} ({board_type})")
+                            
+                            # Also try to get issues from the first board if issues weren't already fetched
+                            if not fetch_issues and boards:
+                                try:
+                                    first_board_id = boards[0].get("id")
+                                    if first_board_id:
+                                        board_issues = jira_client.get_board_issues(first_board_id, max_results=20)
+                                        if board_issues:
+                                            jira_context_parts.append("")
+                                            jira_context_parts.append(f"ISSUES FROM BOARD '{boards[0].get('name', 'Unknown')}' ({len(board_issues)} total):")
+                                            jira_context_parts.append("-" * 50)
+                                            for i, issue in enumerate(board_issues[:15], 1):
+                                                key = issue.get("key", "Unknown")
+                                                fields = issue.get("fields", {}) if "fields" in issue else issue
+                                                summary = fields.get("summary", "No summary") if isinstance(fields, dict) else "No summary"
+                                                status_obj = fields.get("status", {}) if isinstance(fields, dict) else {}
+                                                status_name = status_obj.get("name", "Unknown") if isinstance(status_obj, dict) else "Unknown"
+                                                jira_context_parts.append(f"  {i}. {key} - {summary[:80]}")
+                                                jira_context_parts.append(f"     Status: {status_name}")
+                                                jira_context_parts.append("")
+                                except Exception as e:
+                                    # Silently fail - board issues are optional
+                                    pass
+                            
+                            jira_context_parts.append("")
+                    except Exception as e:
+                        jira_context_parts.append(f"Note: Could not fetch boards: {str(e)}")
+                        jira_context_parts.append("")
+                
+                # Get recent activity summary if nothing specific requested and no issues were found
+                if not (needs_boards or needs_my_issues or needs_issues) and not jira_context_parts:
+                    try:
+                        activity = jira_client.get_recent_activity(days=7, max_results=10)
+                        jira_context_parts.append("JIRA ACTIVITY SUMMARY:")
+                        jira_context_parts.append(f"Recent Issues Updated: {activity.get('recent_issues_count', 0)}")
+                        jira_context_parts.append(f"My Assigned Issues: {activity.get('my_assigned_issues_count', 0)}")
+                        jira_context_parts.append("")
+                    except Exception:
+                        pass
+                
+                jira_context = "\n".join(jira_context_parts) if jira_context_parts else "No JIRA data available."
+            except Exception as e:
+                jira_context = f"Note: Could not fetch JIRA context: {str(e)}"
+        
         # Multi-source correlation (if calendar, GitHub, and/or Slack data available)
         if include_calendar_context and include_github_context and calendar_context and github_context:
             try:
@@ -1352,7 +1790,7 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         
         # Combine and compress contexts
         combined_context = None
-        if calendar_context or github_context or slack_context or correlation_context:
+        if calendar_context or github_context or slack_context or jira_context or correlation_context:
             context_parts = []
             if calendar_context:
                 context_parts.append(calendar_context)
@@ -1360,6 +1798,8 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 context_parts.append(github_context)
             if slack_context:
                 context_parts.append(slack_context)
+            if jira_context:
+                context_parts.append(jira_context)
             if correlation_context:
                 context_parts.append(correlation_context)
             

@@ -21,6 +21,7 @@ from src.server import chat
 from src.calendar_client import CalendarClient
 from src.github_client import GitHubClient
 from src.slack_client import SlackClient
+from src.jira_client import JiraClient
 from src.query_analyzer import QueryAnalyzer
 
 # Page configuration
@@ -87,8 +88,11 @@ if "github_client" not in st.session_state:
 if "slack_client" not in st.session_state:
     st.session_state.slack_client = None
 
+if "jira_client" not in st.session_state:
+    st.session_state.jira_client = None
+
 def initialize_clients():
-    """Initialize calendar, GitHub, and Slack clients."""
+    """Initialize calendar, GitHub, Slack, and JIRA clients."""
     try:
         if st.session_state.calendar_client is None:
             credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "config/credentials.json")
@@ -117,6 +121,13 @@ def initialize_clients():
             st.session_state.slack_client = SlackClient()
     except Exception as e:
         st.session_state.slack_client = None
+        # Don't show error to user, just silently fail
+    
+    try:
+        if st.session_state.jira_client is None:
+            st.session_state.jira_client = JiraClient()
+    except Exception as e:
+        st.session_state.jira_client = None
         # Don't show error to user, just silently fail
 
 def format_time(dt_str):
@@ -228,6 +239,7 @@ def main():
             st.session_state.calendar_client = None
             st.session_state.github_client = None
             st.session_state.slack_client = None
+            st.session_state.jira_client = None
             initialize_clients()
             st.rerun()
         
@@ -238,10 +250,12 @@ def main():
         calendar_status = "✅ Connected" if st.session_state.calendar_client else "❌ Not Connected"
         github_status = "✅ Connected" if st.session_state.github_client else "❌ Not Connected"
         slack_status = "✅ Connected" if st.session_state.slack_client else "❌ Not Connected"
+        jira_status = "✅ Connected" if st.session_state.jira_client else "❌ Not Connected"
         
         st.write(f"**Calendar:** {calendar_status}")
         st.write(f"**GitHub:** {github_status}")
         st.write(f"**Slack:** {slack_status}")
+        st.write(f"**JIRA:** {jira_status}")
         
         if not st.session_state.calendar_client:
             st.info("💡 Configure Google Calendar credentials to enable calendar features.")
@@ -249,15 +263,17 @@ def main():
             st.info("💡 Set GITHUB_TOKEN in .env to enable GitHub features.")
         if not st.session_state.slack_client:
             st.info("💡 Set SLACK_USER_TOKEN in .env to enable Slack features.")
+        if not st.session_state.jira_client:
+            st.info("💡 Set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in .env to enable JIRA features.")
         
         st.divider()
         
         st.subheader("💬 AI Assistant")
-        st.caption("Ask questions about your projects, schedule, GitHub activity, or Slack messages")
+        st.caption("Ask questions about your projects, schedule, GitHub activity, Slack messages, or JIRA issues")
     
     # Main content - AI Assistant only
     st.header("💬 AI Assistant")
-    st.caption("Ask me anything about your projects, schedule, GitHub activity, or Slack messages")
+    st.caption("Ask me anything about your projects, schedule, GitHub activity, Slack messages, or JIRA issues")
     
     # Predefined queries organized by category
     st.subheader("📋 Predefined Queries")
@@ -379,6 +395,45 @@ def main():
     
     st.divider()
     
+    # JIRA queries
+    st.markdown("#### 🎯 JIRA & Issues")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🎫 My JIRA issues", use_container_width=True):
+            st.session_state.quick_query = "What JIRA issues are assigned to me?"
+            st.rerun()
+        if st.button("📋 List JIRA boards", use_container_width=True):
+            st.session_state.quick_query = "Show me my JIRA boards"
+            st.rerun()
+        if st.button("📦 Backlog items", use_container_width=True):
+            st.session_state.quick_query = "Show me JIRA backlog items"
+            st.rerun()
+    
+    with col2:
+        if st.button("📊 JIRA activity", use_container_width=True):
+            st.session_state.quick_query = "What's my JIRA activity?"
+            st.rerun()
+        if st.button("🐛 My bugs", use_container_width=True):
+            st.session_state.quick_query = "Show me my JIRA bugs"
+            st.rerun()
+        if st.button("✅ In progress tasks", use_container_width=True):
+            st.session_state.quick_query = "What JIRA tasks are in progress?"
+            st.rerun()
+    
+    with col3:
+        if st.button("📈 Sprint issues", use_container_width=True):
+            st.session_state.quick_query = "What issues are in my sprint?"
+            st.rerun()
+        if st.button("🎯 High priority", use_container_width=True):
+            st.session_state.quick_query = "Show me high priority JIRA issues"
+            st.rerun()
+        if st.button("📝 JIRA summary", use_container_width=True):
+            st.session_state.quick_query = "Give me a summary of my JIRA issues"
+            st.rerun()
+    
+    st.divider()
+    
     # Custom query input
     st.subheader("💭 Custom Query")
     user_input = st.text_input("Enter your question:", placeholder="e.g., What meetings do I have today?")
@@ -395,12 +450,17 @@ def main():
                 include_slack = any(keyword in message_lower for keyword in 
                                   ['slack', 'message', 'messages', 'channel', 'channels', 'mention', 'mentions',
                                    'unread', 'dm', 'direct message', 'thread', 'threads'])
+                include_jira = any(keyword in message_lower for keyword in 
+                                 ['jira', 'jql', 'board', 'boards', 'sprint', 'sprints', 'ticket', 'tickets',
+                                  'issue', 'issues', 'task', 'tasks', 'story', 'stories', 'bug', 'bugs',
+                                  'assigned to me', 'my issues', 'my tickets', 'backlog', 'backlog items'])
                 
                 response = chat(
                     message=user_input,
                     include_calendar_context=True,
                     include_github_context=include_github,
-                    include_slack_context=include_slack
+                    include_slack_context=include_slack,
+                    include_jira_context=include_jira
                 )
                 
                 st.markdown("### Response:")
@@ -423,12 +483,17 @@ def main():
                 include_slack = any(keyword in message_lower for keyword in 
                                   ['slack', 'message', 'messages', 'channel', 'channels', 'mention', 'mentions',
                                    'unread', 'dm', 'direct message', 'thread', 'threads'])
+                include_jira = any(keyword in message_lower for keyword in 
+                                 ['jira', 'jql', 'board', 'boards', 'sprint', 'sprints', 'ticket', 'tickets',
+                                  'issue', 'issues', 'task', 'tasks', 'story', 'stories', 'bug', 'bugs',
+                                  'assigned to me', 'my issues', 'my tickets', 'backlog', 'backlog items'])
                 
                 response = chat(
                     message=query,
                     include_calendar_context=True,
                     include_github_context=include_github,
-                    include_slack_context=include_slack
+                    include_slack_context=include_slack,
+                    include_jira_context=include_jira
                 )
                 
                 st.markdown("### Response:")

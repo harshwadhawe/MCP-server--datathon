@@ -1,268 +1,253 @@
-# Google Calendar MCP Server
+# Project Management MCP Server
 
-A Model Context Protocol (MCP) server that intelligently integrates with Google Calendar to provide context-aware responses for AI models. This server analyzes user queries, fetches relevant calendar data, and formats it as concise context to enhance AI assistant capabilities.
+A **Model Context Protocol (MCP)** server that acts as a context-aware middleware for AI assistants. It intercepts user queries, analyzes intent, fetches context from multiple productivity systems (Google Calendar, GitHub, Slack, and JIRA), assembles a structured context package, and delivers it alongside the original prompt to the Gemini AI model for hyper-relevant responses.
 
-## Overview
+This repository (together with a Devpost demo video) forms the submission for the Build-Your-Own-MCP Challenge.
 
-The Google Calendar MCP Server acts as a "smart context engine" that:
+---
 
-- **Intercepts** user queries about calendar information
-- **Analyzes** queries to understand what calendar context is needed
-- **Fetches** relevant data from Google Calendar API
-- **Assembles** data into a formatted "context package"
-- **Delivers** the context to AI models for hyper-relevant responses
+## Table of Contents
+1. [High-Level Workflow](#high-level-workflow)
+2. [Key Capabilities](#key-capabilities)
+3. [Architecture](#architecture)
+4. [Integrations & Required Credentials](#integrations--required-credentials)
+5. [Installation & Setup](#installation--setup)
+6. [Running the Server & UI](#running-the-server--ui)
+7. [Available MCP Tools](#available-mcp-tools)
+8. [Submission Checklist](#submission-checklist)
+9. [Project Structure](#project-structure)
+10. [Troubleshooting](#troubleshooting)
+11. [License & Contact](#license--contact)
 
-## Features
+---
 
-### Query Analysis Capabilities
-- Detects time references (today, tomorrow, next week, specific dates)
-- Identifies intent types (availability check, schedule summary, conflict detection)
-- Extracts date/time parameters from natural language
+## High-Level Workflow
 
-### Calendar Data Fetching
-- Upcoming events (next N events, events on specific date)
-- Event details (title, time, attendees, location, description)
-- Availability windows
-- Conflict detection
-- Meeting summaries
+1. **Intercept** user queries (via MCP client, CLI, or Streamlit dashboard).
+2. **Analyze** intent with an NLP-powered `QueryAnalyzer` (intent detection, entity extraction, domain classification, temporal parsing).
+3. **Fetch** supplemental context from the relevant data sources.
+4. **Assemble** a ranked & summarized context package using caching, ranking, summarization, and correlation engines.
+5. **Deliver** the context bundle and original prompt to Gemini for the final response.
 
-### Context Formatting
-- Concise event summaries
-- Availability status
-- Conflict alerts
-- Time-aware formatting
+---
 
-## Data Source
+## Key Capabilities
 
-This MCP server connects to the **Google Calendar API** to fetch calendar events and provide personalized context based on the user's schedule.
+### Intelligent Query Understanding
+- Detects calendar, GitHub, Slack, and JIRA domains (or multi-domain queries).
+- Extracts entities such as repositories, PR/issue counts, calendar dates, backlog keywords, etc.
+- Supports relative and absolute time references via a time-aware analyzer.
 
-## Prerequisites
+### Multi-Source Context Gathering
+- **Google Calendar:** Events, availability, conflicts, and multi-calendar aggregation.
+- **GitHub:** Repositories, issues, PRs, commits, deployments, README summaries.
+- **Slack:** Channels, mentions, unread messages, recent activity.
+- **JIRA:** Boards, assigned issues, backlog items, sprint insights.
 
-- Python 3.10 or later
-- Google Cloud Project with Google Calendar API enabled
-- OAuth 2.0 credentials from Google Cloud Console
+### Context Packaging
+- **ContextCache:** TTL-based cache to minimize redundant API calls.
+- **ContextRanker:** Prioritizes the most relevant events/issues per query.
+- **ContextSummarizer:** Compresses context to stay within token budgets.
+- **ContextCorrelator:** Cross-links signals across services (e.g., meetings vs. deployments vs. Slack alerts).
 
-## Installation
+### Delivery via Gemini
+- Aggregated context + user prompt → Gemini (primarily `gemini-2.5-flash`) to craft a tailored response.
 
-1. **Clone or download this repository**
+---
 
-2. **Create a virtual environment** (recommended):
+## Architecture
+
+```
+┌──────────────────────────┐
+│      User Request        │
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│     Query Analyzer       │  ← intent detection, entities, time range
+└────────────┬─────────────┘
+             │
+  ┌──────────┼───────────┐
+  │          │           │
+  ▼          ▼           ▼
+Calendar   GitHub      Slack      JIRA
+Client     Client      Client     Client
+(fetch)    (fetch)     (fetch)    (fetch)
+  │          │           │         │
+  └──────────┴───────────┴─────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│ Cache / Rank / Summarize │
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│ Gemini Client (Chat)     │ → context + prompt → AI answer
+└──────────────────────────┘
+```
+
+---
+
+## Integrations & Required Credentials
+
+| Service          | Credentials / Env Vars                                  | Notes |
+|------------------|----------------------------------------------------------|-------|
+| Google Calendar  | `config/credentials.json`, `config/token.json` (generated) | OAuth desktop credentials with Calendar scopes |
+| GitHub           | `.env` → `GITHUB_TOKEN`                                   | Personal Access Token with repo scope |
+| Slack            | `.env` → `SLACK_USER_TOKEN`                               | User token with `channels:read`, `channels:history`, `groups:*`, `im:*`, `search:read`, `users:read` |
+| JIRA             | `.env` → `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`  | Jira Cloud site, email, and API token |
+| Gemini           | `.env` → `GEMINI_API_KEY`                                 | Google AI Studio API key |
+
+Optional environment variables (with defaults in code):
+- `GOOGLE_CREDENTIALS_PATH` (default `config/credentials.json`)
+- `GOOGLE_TOKEN_PATH`       (default `config/token.json`)
+- `CALENDAR_TIMEZONE`       (used for time parsing defaults)
+
+Make sure sensitive files (credentials and tokens) stay out of version control. `.gitignore` already excludes them.
+
+---
+
+## Installation & Setup
+
+1. **Clone the repository**
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   git clone <repo-url>
+   cd MCP\ server
    ```
 
-3. **Install dependencies**:
+2. **Create & activate a Python environment**
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate            # Windows: .venv\Scripts\activate
+   ```
+
+3. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Set up Google Calendar API credentials**:
-   
-   a. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-   
-   b. Create a new project or select an existing one
-   
-   c. Enable the Google Calendar API:
-      - Navigate to "APIs & Services" > "Library"
-      - Search for "Google Calendar API"
-      - Click "Enable"
-   
-   d. Configure OAuth consent screen:
-      - Go to "APIs & Services" > "OAuth consent screen"
-      - Choose "External" (unless you have a Google Workspace account)
-      - Fill in the required information
-      - Add scopes: `https://www.googleapis.com/auth/calendar.readonly`
-      - Add your email as a test user
-   
-   e. Create OAuth 2.0 credentials:
-      - Go to "APIs & Services" > "Credentials"
-      - Click "Create Credentials" > "OAuth client ID"
-      - Choose "Desktop app" as the application type
-      - Download the credentials JSON file
-   
-   f. Place the credentials file:
-      - Rename the downloaded file to `credentials.json`
-      - Place it in the `config/` directory
-      - The file should be at: `config/credentials.json`
+4. **Provide credentials**
+   - Place Google OAuth desktop credentials at `config/credentials.json`.
+   - Create a `.env` file (copy `.env.example`) and populate the tokens/keys listed above.
 
-5. **Configure environment variables** (optional):
-   ```bash
-   cp .env.example .env
-   # Edit .env if you need to customize paths
-   ```
+5. **Authenticate Google Calendar (first run)**
+   Running the server for the first time will launch a browser window for Google OAuth and produce `config/token.json`.
 
-## Usage
+---
 
-### Running the Server
+## Running the Server & UI
 
-Start the MCP server:
-
+### 1. MCP Server (JSON-RPC over stdio)
 ```bash
 python main.py
 ```
+This registers tools such as `chat`, `get_calendar_context`, `get_github_repositories`, `get_slack_mentions`, `get_jira_backlog`, etc.
 
-Or alternatively:
-
+### 2. Streamlit Dashboard (optional UI)
 ```bash
-python -m src.server
+streamlit run streamlit_app.py
 ```
+Features predefined queries, quick actions, and a custom prompt box for Calendar/GitHub/Slack/JIRA.
 
-On first run, the server will:
-1. Open a browser window for Google OAuth authentication
-2. Ask you to sign in and grant calendar access
-3. Save the authentication token for future use
+### 3. CLI Test Scripts (optional)
+- `interactive_client.py` for command-line chat testing.
+- `slack_test.py`, `jira_test.py` for quick credential and API verification.
 
-### MCP Tools
+---
 
-The server provides the following tools:
+## Available MCP Tools
 
-#### 1. `get_calendar_context`
-Main tool that analyzes a query and returns formatted calendar context.
+| Tool | Description |
+|------|-------------|
+| `chat` | Main conversational endpoint; auto-fetches relevant context across all services. |
+| **Calendar** |
+| `get_calendar_context` | Analyze a query and return formatted calendar context. |
+| `check_availability` | Check availability for a specific timeslot. |
+| `get_upcoming_events` | List upcoming events. |
+| `detect_conflicts` | Identify conflicts on a date. |
+| **GitHub** |
+| `get_github_repositories` | List repositories (with metadata). |
+| `get_github_issues` | Fetch open issues. |
+| `get_github_pull_requests` | Fetch PRs. |
+| `get_github_deployments` | Retrieve deployments + status. |
+| **Slack** |
+| `get_slack_channels` | List channels. |
+| `get_slack_unread` | Channels with unread messages. |
+| `get_slack_mentions` | Recent mentions. |
+| **JIRA** |
+| `get_jira_boards` | List boards. |
+| `get_jira_issues` | General issue retrieval (board/JQL). |
+| `get_my_jira_issues` | Issues assigned to the authenticated user (with fallbacks). |
+| `get_jira_backlog` | Backlog items (Agile API + JQL fallback). |
 
-**Example prompts:**
-- "Am I free tomorrow at 2 PM?"
-- "What meetings do I have this week?"
-- "Do I have any conflicts next Monday?"
+Each tool returns a formatted string suitable for direct inclusion in a context package.
 
-#### 2. `check_availability`
-Check if the user is available at a specific date and time.
+---
 
-**Parameters:**
-- `date`: Date to check (YYYY-MM-DD format or natural language like "tomorrow")
-- `time`: Time to check (HH:MM format or natural language like "2 PM") - optional
-- `duration_hours`: Duration of the time slot in hours (default: 1.0)
+## Submission Checklist
 
-**Example:**
-```python
-check_availability(date="2024-12-15", time="14:00", duration_hours=1.0)
-```
+✅ **GitHub Repository** – contains the full MCP server implementation, connectors, UI, and test scripts.
 
-#### 3. `get_upcoming_events`
-Get upcoming calendar events.
+✅ **Context-Aware Workflow** – intercept → analyze → fetch → assemble → deliver implemented across four services.
 
-**Parameters:**
-- `days`: Number of days to look ahead (default: 7)
-- `max_results`: Maximum number of events to return (default: 10)
+⚠️ **Devpost Video Demo** – still needed. Please record a short walkthrough showing:
+  - How a query flows through the system (e.g., via Streamlit UI).
+  - The resulting context assembly (logs/UI snippets).
+  - The Gemini-powered responses.
+  - Any unique 2.0 features (caching, correlation, summarization).
+  Upload the video to Devpost along with the repo link.
 
-**Example:**
-```python
-get_upcoming_events(days=7, max_results=10)
-```
-
-#### 4. `detect_conflicts`
-Detect scheduling conflicts for a specific date.
-
-**Parameters:**
-- `date`: Date to check (YYYY-MM-DD format or natural language like "tomorrow")
-
-**Example:**
-```python
-detect_conflicts(date="2024-12-15")
-```
-
-## Example Use Cases
-
-### Example 1: Availability Check
-**Query**: "Am I free tomorrow at 2 PM?"
-
-**Context**: "User's calendar for tomorrow shows: 'Team Meeting' from 1:00-2:30 PM. User is NOT free at 2 PM."
-
-**AI Response**: "No, it looks like you have a 'Team Meeting' scheduled from 1:00 to 2:30 PM tomorrow, so you're not free at 2 PM."
-
-### Example 2: Schedule Summary
-**Query**: "What meetings do I have this week?"
-
-**Context**: "Schedule for the next 7 days: Monday, December 9 - 'Project Review' (10:00 AM - 11:00 AM), 'Client Call' (3:00 PM - 4:00 PM); Tuesday, December 10 - 'Standup' (9:00 AM - 9:30 AM)"
-
-**AI Response**: "This week you have: Monday - 'Project Review' at 10 AM and 'Client Call' at 3 PM; Tuesday - 'Standup' at 9 AM."
-
-### Example 3: Conflict Detection
-**Query**: "Do I have any conflicts next Monday?"
-
-**Context**: "No conflicts detected for Monday, December 16. You have 2 event(s) scheduled: 'Lunch Meeting' (12:00 PM - 1:00 PM); 'Code Review' (4:00 PM - 5:00 PM)"
-
-**AI Response**: "No conflicts detected for next Monday. You have 2 events: 'Lunch Meeting' at 12 PM and 'Code Review' at 4 PM."
+---
 
 ## Project Structure
 
 ```
-mcp-server/
+MCP server/
+├── main.py                     # Entry point for MCP server
+├── streamlit_app.py            # Optional Streamlit UI
+├── interactive_client.py       # Simple CLI client
+├── slack_test.py / jira_test.py# Quick integration smoke tests
 ├── src/
-│   ├── __init__.py
-│   ├── server.py              # Main MCP server implementation
-│   ├── query_analyzer.py      # Query parsing and intent detection
-│   ├── calendar_client.py     # Google Calendar API wrapper
-│   ├── context_formatter.py   # Data formatting and summarization
-│   └── utils.py               # Helper functions
+│   ├── server.py               # MCP tools & orchestration layer
+│   ├── query_analyzer.py       # NLP intent/time/entity detection
+│   ├── context_cache.py        # TTL cache for API responses
+│   ├── context_ranker.py       # Relevance scoring
+│   ├── context_summarizer.py   # Compression + summarization utilities
+│   ├── context_correlator.py   # Multi-source correlation engine
+│   ├── context_formatter.py    # Human-friendly context formatting
+│   ├── gemini_client.py        # Gemini chat integration
+│   ├── calendar_client.py      # Google Calendar wrapper
+│   ├── github_client.py        # GitHub REST wrapper
+│   ├── slack_client.py         # Slack WebClient wrapper
+│   ├── jira_client.py          # Jira REST (Agile + Core) wrapper
+│   └── connectors/             # Connector facades per service
 ├── config/
-│   ├── credentials.json       # Google OAuth credentials (not in repo)
-│   └── credentials.json.example # Example credentials file
+│   ├── credentials.json        # Google OAuth client (excluded from git)
+│   └── token.json              # Google OAuth token (excluded from git)
 ├── requirements.txt
-├── README.md
-├── .env.example               # Environment variables template
-└── .gitignore
+├── .env.example
+└── README.md (this file)
 ```
 
-## Error Handling
-
-The server includes comprehensive error handling for:
-
-- **API Rate Limiting**: Detects and reports rate limit errors with helpful messages
-- **Authentication Failures**: Provides clear guidance on re-authentication
-- **Network Timeouts**: Handles connection issues gracefully
-- **Invalid Date/Time Parsing**: Falls back to defaults when parsing fails
-- **Missing Credentials**: Clear error messages for missing configuration files
-
-## Security Notes
-
-- **Never commit** `credentials.json` or `token.json` to version control
-- The `.gitignore` file is configured to exclude sensitive files
-- OAuth tokens are stored locally and refreshed automatically
-- The server only requests read-only access to your calendar
+---
 
 ## Troubleshooting
 
-### Authentication Issues
-- Ensure `credentials.json` is in the `config/` directory
-- Delete `config/token.json` and re-authenticate if you see authentication errors
-- Verify that the OAuth consent screen is properly configured
+| Issue | Resolution |
+|-------|------------|
+| Google Calendar auth loop | Delete `config/token.json` and rerun to reauthenticate. Ensure OAuth consent screen has you as a test user. |
+| GitHub 401 | Regenerate `GITHUB_TOKEN` (classic PAT) with `repo` scope. |
+| Slack `missing_scope` | Add required scopes under **User Token Scopes** and reinstall the app. |
+| JIRA 410 errors | Confirm you have access to the Jira Cloud site and use valid API tokens. The client already falls back to board-based queries when search fails. |
+| Gemini errors | Verify `GEMINI_API_KEY` is correct and the selected model is available in your region/account. |
 
-### API Errors
-- Check that Google Calendar API is enabled in your Google Cloud project
-- Verify that you've granted the necessary permissions
-- Ensure your Google account has an active calendar
+Logging is configured to stderr to avoid interfering with MCP stdio responses.
 
-### Import Errors
-- Make sure all dependencies are installed: `pip install -r requirements.txt`
-- Verify you're using Python 3.10 or later
-- Check that you're running from the project root directory
+---
 
-## Development
+## License & Contact
 
-### Running Tests
-```bash
-# Add your test commands here when tests are implemented
-python -m pytest tests/
-```
+Created for the **Build-Your-Own-MCP Challenge**.
 
-### Contributing
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-## License
-
-This project is created for the Build-Your-Own-MCP Challenge.
-
-## Acknowledgments
-
-- Built using the [Model Context Protocol](https://modelcontextprotocol.io/)
-- Google Calendar API integration
-- MCP Python SDK
-
-## Contact
-
-For questions or issues, please open an issue in the repository.
-
+For questions, open an issue or reach out via the Devpost discussion board when submitting your demo.

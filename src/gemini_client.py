@@ -107,29 +107,32 @@ class GeminiClient:
             
             if calendar_context:
                 prompt_parts.append(
-                    "=== USER DATA (Calendar, GitHub, Slack) ===\n"
-                    "Below is the user's information from various sources (Calendar, GitHub, Slack). "
+                    "=== USER DATA (Calendar, GitHub, Slack, JIRA) ===\n"
+                    "Below is the user's information from various sources (Calendar, GitHub, Slack, JIRA). "
                     "Please read and parse ALL of this data carefully, then provide a comprehensive answer based on what's available.\n\n"
                     f"{calendar_context}\n\n"
                     "=== END USER DATA ===\n\n"
                 )
             
             prompt_parts.append(
-                "You are a helpful AI assistant that helps users manage their calendar, GitHub repositories, and Slack messages. "
+                "You are a helpful AI assistant that helps users manage their calendar, GitHub repositories, Slack messages, and JIRA issues. "
                 "IMPORTANT INSTRUCTIONS:\n"
-                "1. Read and parse ALL the data provided above (Calendar, GitHub, Slack, or any combination)\n"
+                "1. Read and parse ALL the data provided above (Calendar, GitHub, Slack, JIRA, or any combination)\n"
                 "2. Answer questions based on the relevant data source:\n"
                 "   - For calendar questions: Use calendar data to answer about schedule, events, availability\n"
                 "   - For GitHub questions: Use GitHub data to answer about repositories, issues, PRs, commits, deployments\n"
                 "   - For Slack questions: Use Slack data to answer about messages, channels, mentions, unread messages\n"
+                "   - For JIRA questions: Use JIRA data to answer about boards, issues, tickets, sprints, assigned tasks\n"
                 "3. If the user asks about Slack messages/channels/mentions, look for SLACK data in the context above\n"
                 "4. If the user asks about GitHub repos/issues/PRs, look for GITHUB data in the context above\n"
                 "5. If the user asks about calendar/events/schedule, look for CALENDAR data in the context above\n"
-                "6. If no relevant data is found for a question, clearly state that the data is not available\n"
-                "7. Be accurate and comprehensive - use ALL available data from the context\n"
-                "8. For calendar queries: Group events by date, include titles, times, and locations\n"
-                "9. For GitHub queries: Include repository names, issue/PR numbers, commit SHAs, deployment statuses\n"
-                "10. For Slack queries: Include channel names, message counts, mention details\n\n"
+                "6. If the user asks about JIRA issues/boards/tickets, look for JIRA data in the context above\n"
+                "7. If no relevant data is found for a question, clearly state that the data is not available\n"
+                "8. Be accurate and comprehensive - use ALL available data from the context\n"
+                "9. For calendar queries: Group events by date, include titles, times, and locations\n"
+                "10. For GitHub queries: Include repository names, issue/PR numbers, commit SHAs, deployment statuses\n"
+                "11. For Slack queries: Include channel names, message counts, mention details\n"
+                "12. For JIRA queries: Include issue keys, summaries, statuses, priorities, assignees, and board information\n\n"
             )
             
             # Add conversation history if provided
