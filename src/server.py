@@ -140,6 +140,141 @@ def initialize_jira_client():
             raise RuntimeError(f"Failed to initialize Jira client: {e}")
 
 
+def _format_jira_response_directly(message: str, jira_context: str) -> str:
+    """
+    Format Jira data directly without going through Gemini.
+    This bypasses safety filters for Jira queries.
+    
+    Args:
+        message: User's query
+        jira_context: Raw Jira context data
+        
+    Returns:
+        Formatted response string
+    """
+    message_lower = message.lower()
+    
+    # Extract key information from context
+    response_parts = []
+    
+    # Check for sprint queries
+    if any(keyword in message_lower for keyword in ['sprint', 'sprints', 'active sprint']):
+        if "ACTIVE JIRA SPRINTS" in jira_context.upper():
+            sprint_lines = []
+            in_sprint_section = False
+            for line in jira_context.split('\n'):
+                if "ACTIVE JIRA SPRINTS" in line.upper():
+                    in_sprint_section = True
+                    count_match = re.search(r'\((\d+)\s+total\)', line.upper())
+                    count = count_match.group(1) if count_match else ""
+                    sprint_lines.append(f"## 🚀 Active Jira Sprints ({count} total)\n")
+                elif in_sprint_section:
+                    if line.strip().startswith("---") or line.strip() == "":
+                        continue
+                    elif any(keyword in line.upper() for keyword in ["ASSIGNED", "COMPLETED", "PROJECTS", "JIRA USER"]):
+                        break
+                    elif line.strip():
+                        # Format sprint line
+                        if "ID:" in line and "Sprint" in line:
+                            sprint_name = re.sub(r'^\d+\.\s*', '', line.strip())
+                            if "(" in sprint_name and "ID:" in sprint_name:
+                                parts = sprint_name.split("(")
+                                name = parts[0].strip()
+                                sprint_id = parts[1].replace("ID:", "").replace(")", "").strip()
+                                sprint_lines.append(f"\n### {name}\n")
+                                sprint_lines.append(f"  **Sprint ID:** {sprint_id}\n")
+                            else:
+                                sprint_lines.append(f"\n### {sprint_name}\n")
+                        elif "State:" in line or "Period:" in line:
+                            # Format dates and calculate days remaining
+                            if "Period:" in line and "T" in line:
+                                try:
+                                    from datetime import datetime, timezone
+                                    date_pattern = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z)'
+                                    dates = re.findall(date_pattern, line)
+                                    if len(dates) >= 2:
+                                        start = datetime.fromisoformat(dates[0].replace('Z', '+00:00'))
+                                        end = datetime.fromisoformat(dates[1].replace('Z', '+00:00'))
+                                        now = datetime.now(timezone.utc)
+                                        
+                                        # Calculate days remaining
+                                        days_remaining = (end - now).days
+                                        days_elapsed = (now - start).days
+                                        total_days = (end - start).days
+                                        
+                                        sprint_lines.append(f"  **Period:** {start.strftime('%B %d, %Y')} to {end.strftime('%B %d, %Y')}\n")
+                                        
+                                        if days_remaining > 0:
+                                            sprint_lines.append(f"  **Days Remaining:** {days_remaining} days\n")
+                                            sprint_lines.append(f"  **Progress:** {days_elapsed}/{total_days} days elapsed ({int((days_elapsed/total_days)*100)}%)\n")
+                                        elif days_remaining == 0:
+                                            sprint_lines.append(f"  **Status:** Ends today!\n")
+                                        else:
+                                            sprint_lines.append(f"  **Status:** Ended {abs(days_remaining)} days ago\n")
+                                    else:
+                                        sprint_lines.append(f"  {line.strip()}\n")
+                                except Exception as e:
+                                    sprint_lines.append(f"  {line.strip()}\n")
+                            else:
+                                sprint_lines.append(f"  {line.strip()}\n")
+            
+            if sprint_lines:
+                response_parts.append("".join(sprint_lines))
+    
+    # Check for issue queries
+    if any(keyword in message_lower for keyword in ['issue', 'issues', 'assigned', 'my issues', 'completed']):
+        if "ASSIGNED JIRA ISSUES" in jira_context.upper() or "COMPLETED JIRA ISSUES" in jira_context.upper():
+            issue_lines = []
+            in_issue_section = False
+            for line in jira_context.split('\n'):
+                if "ASSIGNED JIRA ISSUES" in line.upper() or "COMPLETED JIRA ISSUES" in line.upper():
+                    in_issue_section = True
+                    count_match = re.search(r'\((\d+)\s+total\)', line.upper())
+                    count = count_match.group(1) if count_match else ""
+                    issue_lines.append(f"## 🎫 {line.strip()}\n\n")
+                elif in_issue_section:
+                    if line.strip().startswith("---") or line.strip() == "":
+                        continue
+                    elif any(keyword in line.upper() for keyword in ["SPRINTS", "PROJECTS", "JIRA USER"]):
+                        break
+                    elif line.strip() and not line.strip().startswith("("):
+                        if line.strip().startswith("  ") and not line.strip().startswith("     "):
+                            issue_lines.append(f"**{line.strip()}**\n")
+                        elif line.strip().startswith("     "):
+                            issue_lines.append(f"  {line.strip()}\n")
+            
+            if issue_lines:
+                response_parts.append("".join(issue_lines))
+    
+    # Check for project queries
+    if any(keyword in message_lower for keyword in ['project', 'projects']):
+        if "JIRA PROJECTS" in jira_context.upper():
+            project_lines = []
+            in_project_section = False
+            for line in jira_context.split('\n'):
+                if "JIRA PROJECTS" in line.upper():
+                    in_project_section = True
+                    count_match = re.search(r'\((\d+)\s+total\)', line.upper())
+                    count = count_match.group(1) if count_match else ""
+                    project_lines.append(f"## 📋 Jira Projects ({count} total)\n\n")
+                elif in_project_section:
+                    if line.strip().startswith("---") or line.strip() == "":
+                        continue
+                    elif any(keyword in line.upper() for keyword in ["SPRINTS", "ISSUES", "JIRA USER"]):
+                        break
+                    elif line.strip() and not line.strip().startswith("("):
+                        project_lines.append(f"  {line.strip()}\n")
+            
+            if project_lines:
+                response_parts.append("".join(project_lines))
+    
+    if response_parts:
+        return "\n".join(response_parts)
+    else:
+        # Fallback: return formatted context
+        return jira_context
+
+
 def initialize_gemini_client():
     """Initialize the Gemini client."""
     global gemini_client
@@ -1013,6 +1148,234 @@ def get_jira_user_issues(email: Optional[str] = None, limit: int = 10) -> str:
 
 
 @mcp.tool()
+def get_my_assigned_jiras(limit: int = 20) -> str:
+    """
+    Get all issues assigned to you (the authenticated user).
+    
+    This uses the Jira API token to identify who you are, so it will return
+    issues assigned to the account associated with your JIRA_API_TOKEN.
+    
+    Args:
+        limit: Maximum number of issues to return (default: 20)
+    
+    Returns:
+        Formatted list of assigned Jira issues
+    """
+    try:
+        initialize_jira_client()
+        
+        # Get current user info to show who "you" are
+        try:
+            current_user = jira_client.get_current_user()
+            authenticated_email = current_user.get('emailAddress', jira_client.email)
+            authenticated_name = current_user.get('displayName', authenticated_email)
+        except:
+            authenticated_email = jira_client.email
+            authenticated_name = authenticated_email
+        
+        # Get assigned issues (unresolved only)
+        issues = jira_client.get_user_assigned_issues(email=None, limit=limit, include_resolved=False)
+        
+        if not issues:
+            return (
+                f"No active assigned Jira issues found for {authenticated_name} ({authenticated_email}).\n\n"
+                f"This means you currently have no unresolved issues assigned to you.\n"
+                f"To see completed issues, use get_completed_jiras()."
+            )
+        
+        result_parts = [f"My Assigned Jira Issues ({len(issues)} total):\n"]
+        result_parts.append(f"User: {authenticated_name} ({authenticated_email})\n")
+        
+        for i, issue in enumerate(issues, 1):
+            key = issue.get('key', 'Unknown')
+            fields = issue.get('fields', {})
+            summary = fields.get('summary', 'No summary')
+            status = fields.get('status', {}).get('name', 'Unknown')
+            priority = fields.get('priority', {}).get('name', 'None')
+            project = fields.get('project', {}).get('name', 'Unknown')
+            assignee = fields.get('assignee', {})
+            assignee_name = assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
+            
+            result_parts.append(f"{i}. {key}: {summary}")
+            result_parts.append(f"   Status: {status} | Priority: {priority} | Project: {project}")
+            result_parts.append(f"   Assignee: {assignee_name}")
+            result_parts.append(f"   URL: {jira_client.base_url}/browse/{key}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_my_assigned_jiras: {e}", exc_info=True)
+        error_msg = str(e)
+        if "410" in error_msg or "Gone" in error_msg:
+            return (
+                f"Error: Jira API returned 410 Gone. This usually means:\n"
+                f"1. The API endpoint is deprecated for your Jira version\n"
+                f"2. Your Jira instance may need API v2 instead of v3\n"
+                f"3. Check your Jira instance version and API compatibility\n\n"
+                f"Original error: {error_msg}"
+            )
+        return f"Error fetching my assigned Jira issues: {error_msg}"
+
+
+@mcp.tool()
+def get_completed_jiras(limit: int = 20) -> str:
+    """
+    Get all completed/resolved issues assigned to you (the authenticated user).
+    
+    This uses the Jira API token to identify who you are, so it will return
+    completed issues assigned to the account associated with your JIRA_API_TOKEN.
+    
+    Args:
+        limit: Maximum number of issues to return (default: 20)
+    
+    Returns:
+        Formatted list of completed Jira issues
+    """
+    try:
+        initialize_jira_client()
+        
+        # Get current user info to show who "you" are
+        try:
+            current_user = jira_client.get_current_user()
+            authenticated_email = current_user.get('emailAddress', jira_client.email)
+            authenticated_name = current_user.get('displayName', authenticated_email)
+        except:
+            authenticated_email = jira_client.email
+            authenticated_name = authenticated_email
+        
+        # Get completed issues
+        issues = jira_client.get_completed_issues(email=None, limit=limit)
+        
+        if not issues:
+            return (
+                f"No completed Jira issues found for {authenticated_name} ({authenticated_email}).\n\n"
+                f"This means you have no resolved/completed issues assigned to you.\n"
+                f"To see active issues, use get_my_assigned_jiras()."
+            )
+        
+        result_parts = [f"My Completed Jira Issues ({len(issues)} total):\n"]
+        result_parts.append(f"User: {authenticated_name} ({authenticated_email})\n")
+        
+        for i, issue in enumerate(issues, 1):
+            key = issue.get('key', 'Unknown')
+            fields = issue.get('fields', {})
+            summary = fields.get('summary', 'No summary')
+            status = fields.get('status', {}).get('name', 'Unknown')
+            priority = fields.get('priority', {}).get('name', 'None')
+            project = fields.get('project', {}).get('name', 'Unknown')
+            resolution = fields.get('resolution', {})
+            resolution_name = resolution.get('name', 'Resolved') if resolution else 'Resolved'
+            resolved_date = fields.get('resolutiondate', 'Unknown')
+            
+            result_parts.append(f"{i}. {key}: {summary}")
+            result_parts.append(f"   Status: {status} | Priority: {priority} | Project: {project}")
+            result_parts.append(f"   Resolution: {resolution_name} | Resolved: {resolved_date}")
+            result_parts.append(f"   URL: {jira_client.base_url}/browse/{key}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_completed_jiras: {e}", exc_info=True)
+        error_msg = str(e)
+        if "410" in error_msg or "Gone" in error_msg:
+            return (
+                f"Error: Jira API returned 410 Gone. This usually means:\n"
+                f"1. The API endpoint is deprecated for your Jira version\n"
+                f"2. Your Jira instance may need API v2 instead of v3\n"
+                f"3. Check your Jira instance version and API compatibility\n\n"
+                f"Original error: {error_msg}"
+            )
+        return f"Error fetching completed Jira issues: {error_msg}"
+
+
+@mcp.tool()
+def get_jira_boards() -> str:
+    """
+    Get all accessible Jira boards (Kanban/Scrum boards).
+    
+    Returns:
+        Formatted list of Jira boards
+    """
+    try:
+        initialize_jira_client()
+        
+        boards = jira_client.get_boards()
+        
+        if not boards:
+            return "No Jira boards found."
+        
+        result_parts = [f"Jira Boards ({len(boards)} total):\n"]
+        
+        for i, board in enumerate(boards, 1):
+            board_id = board.get('id', 'Unknown')
+            name = board.get('name', 'Unknown')
+            board_type = board.get('type', 'Unknown')
+            location = board.get('location', {})
+            project_name = location.get('projectName', 'Unknown') if location else 'Unknown'
+            
+            result_parts.append(f"{i}. {name} (ID: {board_id})")
+            result_parts.append(f"   Type: {board_type} | Project: {project_name}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_boards: {e}", exc_info=True)
+        return f"Error fetching Jira boards: {str(e)}"
+
+
+@mcp.tool()
+def get_active_sprints(board_id: Optional[str] = None) -> str:
+    """
+    Get all active sprints from Jira.
+    
+    If board_id is provided, only returns active sprints for that board.
+    If board_id is None, searches all boards for active sprints.
+    
+    Args:
+        board_id: ID of the Jira board (optional, if None searches all boards)
+    
+    Returns:
+        Formatted list of active sprints
+    """
+    try:
+        initialize_jira_client()
+        
+        active_sprints = jira_client.get_active_sprints(board_id=board_id)
+        
+        if not active_sprints:
+            if board_id:
+                return f"No active sprints found for board {board_id}."
+            else:
+                return "No active sprints found across all boards."
+        
+        result_parts = [f"Active Jira Sprints ({len(active_sprints)} total):\n"]
+        if board_id:
+            result_parts.append(f"Board ID: {board_id}\n")
+        
+        for i, sprint in enumerate(active_sprints, 1):
+            sprint_id = sprint.get('id', 'Unknown')
+            name = sprint.get('name', 'Unknown')
+            state = sprint.get('state', 'Unknown')
+            start_date = sprint.get('startDate', 'Not started')
+            end_date = sprint.get('endDate', 'Not ended')
+            board_name = sprint.get('board_name', 'Unknown')
+            
+            result_parts.append(f"{i}. {name} (ID: {sprint_id})")
+            result_parts.append(f"   State: {state} | Board: {board_name}")
+            result_parts.append(f"   Period: {start_date} to {end_date}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_active_sprints: {e}", exc_info=True)
+        return f"Error fetching active sprints: {str(e)}"
+
+
+@mcp.tool()
 def get_jira_sprints(board_id: str) -> str:
     """
     Get all sprints for a Jira board.
@@ -1053,7 +1416,7 @@ def get_jira_sprints(board_id: str) -> str:
 
 
 @mcp.tool()
-def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False, include_jira_context: bool = False) -> str:
+def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False, include_jira_context: bool = False, force_refresh_calendar: bool = False) -> str:
     """
     Chat with the AI assistant about your calendar, GitHub, and Jira. This is a conversational interface
     that uses Gemini AI to answer questions about your schedule, availability, events, GitHub activity, and Jira issues.
@@ -1063,6 +1426,7 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         include_calendar_context: Whether to include calendar context in the response (default: True)
         include_github_context: Whether to include GitHub context in the response (default: False)
         include_jira_context: Whether to include Jira context in the response (default: False)
+        force_refresh_calendar: Force refresh calendar data, bypassing cache (default: False)
     
     Returns:
         AI assistant's response
@@ -1110,11 +1474,15 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 
                 time_min, time_max = query_analyzer.get_time_range_for_query(analysis)
                 
-                # Check cache first
-                events = context_cache.get_calendar_events(time_min, time_max)
+                # Detect if user wants fresh data (keywords suggesting recent updates)
+                refresh_keywords = ['updated', 'just', 'recently', 'new', 'latest', 'refresh', 'reload', 'current']
+                needs_refresh = force_refresh_calendar or any(keyword in message_lower for keyword in refresh_keywords)
+                
+                # Check cache first (unless force refresh is needed)
+                events = context_cache.get_calendar_events(time_min, time_max, force_refresh=needs_refresh)
                 
                 if events is None:
-                    # Cache miss - fetch from API
+                    # Cache miss or force refresh - fetch from API
                     events = calendar_client.get_events_from_all_calendars(
                         time_min=time_min,
                         time_max=time_max,
@@ -1521,6 +1889,17 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 initialize_jira_client()
                 jira_context_parts = []
                 
+                # Always include current date and time for date calculations
+                current_date = datetime.now()
+                jira_context_parts.append("CURRENT DATE AND TIME:")
+                jira_context_parts.append("-" * 50)
+                jira_context_parts.append(f"Current Date: {current_date.strftime('%A, %B %d, %Y')}")
+                jira_context_parts.append(f"Current Time: {current_date.strftime('%I:%M %p %Z')}")
+                jira_context_parts.append(f"Current DateTime (ISO): {current_date.isoformat()}")
+                jira_context_parts.append("")
+                jira_context_parts.append("IMPORTANT: Use this current date to calculate days remaining, time until deadlines, etc.")
+                jira_context_parts.append("")
+                
                 # Always include current user info in Jira context (so AI knows "who you are")
                 try:
                     current_user = jira_client.get_current_user()
@@ -1547,11 +1926,15 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 
                 # Check what type of Jira data is needed
                 needs_jira_issues = any(keyword in message_lower for keyword in 
-                                      ['jira', 'issue', 'issues', 'ticket', 'tickets', 'task', 'tasks', 'bug', 'bugs'])
+                                      ['jira', 'issue', 'issues', 'ticket', 'tickets', 'task', 'tasks', 'bug', 'bugs',
+                                       'assigned', 'my issues', 'my jira', 'jira issues'])
                 needs_jira_projects = any(keyword in message_lower for keyword in 
                                         ['project', 'projects', 'jira project'])
                 needs_jira_sprints = any(keyword in message_lower for keyword in 
-                                       ['sprint', 'sprints', 'agile'])
+                                       ['sprint', 'sprints', 'agile', 'active sprint', 'jira sprint'])
+                needs_completed_issues = any(keyword in message_lower for keyword in 
+                                           ['completed', 'resolved', 'done', 'finished', 'closed', 'completed tasks',
+                                            'completed issues', 'resolved issues'])
                 needs_user_info = any(keyword in message_lower for keyword in 
                                      ['who am i', 'who are you', 'my account', 'my user', 'my identity', 'authenticated', 'current user', 'who is'])
                 
@@ -1659,6 +2042,36 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                         if "410" in error_msg or "Gone" in error_msg:
                             jira_context_parts.append("💡 This is a 410 Gone error. See JIRA_TROUBLESHOOTING.md for help.")
                 
+                # Fetch completed issues if needed
+                if needs_completed_issues:
+                    try:
+                        completed_issues = jira_client.get_completed_issues(limit=20)
+                        if completed_issues:
+                            jira_context_parts.append(f"COMPLETED JIRA ISSUES ({len(completed_issues)} total):")
+                            jira_context_parts.append("-" * 50)
+                            for i, issue in enumerate(completed_issues[:10], 1):
+                                key = issue.get('key', 'Unknown')
+                                fields = issue.get('fields', {})
+                                summary = fields.get('summary', 'No summary')
+                                status = fields.get('status', {}).get('name', 'Unknown')
+                                priority = fields.get('priority', {}).get('name', 'None')
+                                project = fields.get('project', {}).get('name', 'Unknown')
+                                resolution = fields.get('resolution', {})
+                                resolution_name = resolution.get('name', 'Resolved') if resolution else 'Resolved'
+                                resolved_date = fields.get('resolutiondate', 'Unknown')
+                                jira_context_parts.append(f"  {i}. {key}: {summary}")
+                                jira_context_parts.append(f"     Status: {status} | Priority: {priority} | Project: {project}")
+                                jira_context_parts.append(f"     Resolution: {resolution_name} | Resolved: {resolved_date}")
+                                jira_context_parts.append("")
+                        else:
+                            jira_context_parts.append("COMPLETED JIRA ISSUES: No completed issues found.")
+                    except Exception as e:
+                        error_msg = str(e)
+                        jira_context_parts.append(f"❌ Error fetching completed issues: {error_msg}")
+                        logger.error(f"Error fetching Jira completed issues: {e}", exc_info=True)
+                        if "410" in error_msg or "Gone" in error_msg:
+                            jira_context_parts.append("💡 This is a 410 Gone error. See JIRA_TROUBLESHOOTING.md for help.")
+                
                 # Fetch projects if needed
                 if needs_jira_projects:
                     try:
@@ -1677,6 +2090,35 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                         error_msg = str(e)
                         jira_context_parts.append(f"❌ Error fetching projects: {error_msg}")
                         logger.error(f"Error fetching Jira projects: {e}", exc_info=True)
+                        if "410" in error_msg or "Gone" in error_msg:
+                            jira_context_parts.append("💡 This is a 410 Gone error. See JIRA_TROUBLESHOOTING.md for help.")
+                
+                # Fetch sprints if needed
+                if needs_jira_sprints:
+                    try:
+                        # Try to get active sprints (searches all boards)
+                        active_sprints = jira_client.get_active_sprints()
+                        if active_sprints:
+                            jira_context_parts.append(f"ACTIVE JIRA SPRINTS ({len(active_sprints)} total):")
+                            jira_context_parts.append("-" * 50)
+                            for i, sprint in enumerate(active_sprints[:10], 1):
+                                sprint_id = sprint.get('id', 'Unknown')
+                                name = sprint.get('name', 'Unknown')
+                                state = sprint.get('state', 'Unknown')
+                                start_date = sprint.get('startDate', 'Not started')
+                                end_date = sprint.get('endDate', 'Not ended')
+                                board_name = sprint.get('board_name', 'Unknown')
+                                jira_context_parts.append(f"  {i}. {name} (ID: {sprint_id})")
+                                jira_context_parts.append(f"     State: {state} | Board: {board_name}")
+                                jira_context_parts.append(f"     Period: {start_date} to {end_date}")
+                                jira_context_parts.append("")
+                        else:
+                            jira_context_parts.append("ACTIVE JIRA SPRINTS: No active sprints found.")
+                            jira_context_parts.append("💡 Tip: Active sprints are currently running sprints. Check if any sprints are in 'active' state.")
+                    except Exception as e:
+                        error_msg = str(e)
+                        jira_context_parts.append(f"❌ Error fetching sprints: {error_msg}")
+                        logger.error(f"Error fetching Jira sprints: {e}", exc_info=True)
                         if "410" in error_msg or "Gone" in error_msg:
                             jira_context_parts.append("💡 This is a 410 Gone error. See JIRA_TROUBLESHOOTING.md for help.")
                 
@@ -1874,6 +2316,29 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 combined_context,
                 target_length=8000  # ~2000 tokens
             )
+        
+        # For Jira-only queries, bypass Gemini and format response directly
+        # This avoids safety filter issues with technical data
+        is_jira_only_query = (
+            include_jira_context and 
+            not include_calendar_context and 
+            not include_github_context and
+            jira_context and
+            any(keyword in message_lower for keyword in [
+                'sprint', 'sprints', 'jira', 'issue', 'issues', 'ticket', 'tickets',
+                'assigned', 'completed', 'resolved', 'board', 'boards', 'project', 'projects'
+            ])
+        )
+        
+        if is_jira_only_query:
+            # Format Jira data directly without going through Gemini
+            # This bypasses safety filters entirely
+            try:
+                formatted_response = _format_jira_response_directly(message, jira_context)
+                return formatted_response
+            except Exception as e:
+                logger.debug(f"Direct Jira formatting failed, falling back to Gemini: {e}")
+                # Fall through to Gemini
         
         # Get response from Gemini
         response = gemini_client.chat(message, calendar_context=combined_context)

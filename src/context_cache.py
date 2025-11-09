@@ -24,7 +24,7 @@ class ContextCache:
         self.query_cache: Dict[str, Tuple[str, float, int]] = {}
         
         # Default TTLs (in seconds)
-        self.calendar_ttl = 300  # 5 minutes
+        self.calendar_ttl = 30  # 30 seconds (reduced for faster updates)
         self.github_repos_ttl = 3600  # 1 hour
         self.github_issues_ttl = 300  # 5 minutes
         self.github_prs_ttl = 300  # 5 minutes
@@ -47,7 +47,8 @@ class ContextCache:
         self,
         time_min: Optional[datetime],
         time_max: Optional[datetime],
-        calendar_ids: Optional[List[str]] = None
+        calendar_ids: Optional[List[str]] = None,
+        force_refresh: bool = False
     ) -> Optional[List[Dict]]:
         """
         Get calendar events from cache if available and not expired.
@@ -56,10 +57,23 @@ class ContextCache:
             time_min: Start time for query
             time_max: End time for query
             calendar_ids: List of calendar IDs (None for all)
+            force_refresh: If True, bypass cache and return None to force fresh fetch
         
         Returns:
-            Cached events or None if not in cache or expired
+            Cached events or None if not in cache, expired, or force_refresh is True
         """
+        if force_refresh:
+            # Invalidate cache for this specific query
+            cache_key = self._get_cache_key(
+                "calendar_events",
+                time_min=time_min.isoformat() if time_min else None,
+                time_max=time_max.isoformat() if time_max else None,
+                calendars=",".join(sorted(calendar_ids)) if calendar_ids else "all"
+            )
+            if cache_key in self.calendar_cache:
+                del self.calendar_cache[cache_key]
+            return None
+        
         cache_key = self._get_cache_key(
             "calendar_events",
             time_min=time_min.isoformat() if time_min else None,

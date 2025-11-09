@@ -452,6 +452,119 @@ class JiraClient:
         jql = f"updated >= \"{since}\" ORDER BY updated DESC"
         return self.get_issues(jql, max_results=20)
 
+    def get_completed_issues(self, email: Optional[str] = None, limit: int = 20) -> List[Dict]:
+        """
+        Get completed/resolved issues assigned to a specific user (or current user if None).
+
+        Args:
+            email: User email (optional, defaults to authenticated user)
+            limit: Maximum number of issues to return
+        """
+        # Extract username from email if provided
+        username = None
+        if email and '@' in email:
+            username = email.split('@')[0]
+        
+        # Try multiple JQL query variations to handle different Jira versions
+        jql_queries = []
+        
+        if email:
+            email_variations = [email]
+            if username:
+                email_variations.append(username)
+            
+            for email_var in email_variations:
+                jql_queries.extend([
+                    f'assignee = "{email_var}" AND resolution != Unresolved ORDER BY updated DESC',
+                    f'assignee = "{email_var}" AND status = Done ORDER BY updated DESC',
+                    f'assignee = "{email_var}" AND statusCategory = Done ORDER BY updated DESC',
+                    f'assignee = "{email_var}" AND resolution IS NOT EMPTY ORDER BY updated DESC',
+                ])
+        else:
+            # Try currentUser() first, then fallback to email and username
+            email_to_try = self.email
+            username_to_try = email_to_try.split('@')[0] if '@' in email_to_try else None
+            
+            jql_queries = [
+                "assignee = currentUser() AND resolution != Unresolved ORDER BY updated DESC",
+                "assignee = currentUser() AND status = Done ORDER BY updated DESC",
+                "assignee = currentUser() AND statusCategory = Done ORDER BY updated DESC",
+                "assignee = currentUser() AND resolution IS NOT EMPTY ORDER BY updated DESC",
+                f'assignee = "{email_to_try}" AND resolution != Unresolved ORDER BY updated DESC',
+                f'assignee = "{email_to_try}" AND status = Done ORDER BY updated DESC',
+            ]
+            if username_to_try:
+                jql_queries.extend([
+                    f'assignee = "{username_to_try}" AND resolution != Unresolved ORDER BY updated DESC',
+                    f'assignee = "{username_to_try}" AND status = Done ORDER BY updated DESC',
+                ])
+        
+        # Try each JQL query until one works
+        for jql in jql_queries:
+            try:
+                issues = self.get_issues(jql, max_results=limit)
+                if issues:
+                    return issues
+            except Exception as e:
+                # If it's not a 410 error, don't try other queries
+                if "410" not in str(e) and "Gone" not in str(e):
+                    raise
+                continue
+        
+        return []
+
+    def get_boards(self) -> List[Dict]:
+        """
+        Fetch all accessible Jira boards (Kanban/Scrum).
+
+        Returns:
+            List of board dictionaries
+        """
+        url = f"{self.base_url}/rest/agile/1.0/board"
+        try:
+            response = self.session.get(url, verify=self.verify_ssl)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("values", [])
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Error fetching Jira boards: {str(e)}")
+
+    def get_active_sprints(self, board_id: Optional[str] = None) -> List[Dict]:
+        """
+        Fetch active sprints for a given board or all boards.
+
+        Args:
+            board_id: ID of the Jira board (optional, if None, searches all boards)
+        
+        Returns:
+            List of active sprint dictionaries
+        """
+        active_sprints = []
+        
+        if board_id:
+            # Get sprints for specific board
+            sprints = self.get_sprints(board_id)
+            active_sprints = [s for s in sprints if s.get('state', '').lower() == 'active']
+        else:
+            # Get all boards and find active sprints
+            boards = self.get_boards()
+            for board in boards:
+                try:
+                    board_id = board.get('id')
+                    if board_id:
+                        sprints = self.get_sprints(str(board_id))
+                        active = [s for s in sprints if s.get('state', '').lower() == 'active']
+                        # Add board info to each sprint
+                        for sprint in active:
+                            sprint['board_id'] = board_id
+                            sprint['board_name'] = board.get('name', 'Unknown')
+                        active_sprints.extend(active)
+                except Exception:
+                    # Skip boards that fail
+                    continue
+        
+        return active_sprints
+
     def get_sprints(self, board_id: str) -> List[Dict]:
         """
         Fetch all sprints for a given board.

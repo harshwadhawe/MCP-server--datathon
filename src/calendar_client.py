@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -69,18 +69,38 @@ class CalendarClient:
                         "Please download credentials.json from Google Cloud Console."
                     )
                 
+                # Check credential type (desktop app vs web application)
+                with open(self.credentials_path, 'r') as f:
+                    creds_data = json.load(f)
+                
                 # Suppress stdout during OAuth flow to avoid breaking JSON-RPC
                 # Note: OAuth flow should ideally be done before running MCP server
                 # In MCP server context, authentication should be done beforehand
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.credentials_path, SCOPES
-                )
-                # Redirect stdout to stderr during OAuth flow to prevent breaking JSON-RPC
-                # This ensures any output goes to stderr (for logging) instead of stdout (for JSON-RPC)
                 original_stdout = sys.stdout
                 try:
                     sys.stdout = sys.stderr
-                    creds = flow.run_local_server(port=0)
+                    
+                    # Support both desktop app and web application credentials
+                    if 'installed' in creds_data:
+                        # Desktop application credentials
+                        flow = InstalledAppFlow.from_client_secrets_file(
+                            self.credentials_path, SCOPES
+                        )
+                        creds = flow.run_local_server(port=8501)
+                    elif 'web' in creds_data:
+                        # Web application credentials - can still use local server
+                        # Make sure redirect URIs include http://localhost:8501
+                        flow = Flow.from_client_secrets_file(
+                            self.credentials_path, SCOPES
+                        )
+                        # For web apps, we need to specify redirect URI explicitly
+                        flow.redirect_uri = 'http://localhost:8501'
+                        creds = flow.run_local_server(port=8501)
+                    else:
+                        raise ValueError(
+                            "Invalid credentials file format. Expected 'installed' or 'web' key. "
+                            "Please ensure you downloaded the correct credentials file from Google Cloud Console."
+                        )
                 finally:
                     sys.stdout = original_stdout
                     sys.stdout.flush()  # Ensure any buffered output is flushed

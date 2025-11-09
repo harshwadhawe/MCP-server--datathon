@@ -94,6 +94,12 @@ if "github_client" not in st.session_state:
 if "jira_client" not in st.session_state:
     st.session_state.jira_client = None
 
+if "last_processed_query" not in st.session_state:
+    st.session_state.last_processed_query = None
+
+if "response" not in st.session_state:
+    st.session_state.response = None
+
 def initialize_clients():
     """Initialize calendar, GitHub, and Jira clients."""
     try:
@@ -381,8 +387,34 @@ def main():
     
     with col1:
         if st.button("🎫 My assigned issues", use_container_width=True):
-            st.session_state.quick_query = "What Jira issues are assigned to me?"
-            st.rerun()
+            if st.session_state.jira_client:
+                try:
+                    with st.spinner("Fetching your assigned issues..."):
+                        issues = st.session_state.jira_client.get_user_assigned_issues(limit=20, include_resolved=False)
+                        if not issues:
+                            result = "No active assigned Jira issues found."
+                        else:
+                            result_parts = [f"My Assigned Jira Issues ({len(issues)} total):\n"]
+                            for i, issue in enumerate(issues, 1):
+                                key = issue.get('key', 'Unknown')
+                                fields = issue.get('fields', {})
+                                summary = fields.get('summary', 'No summary')
+                                status = fields.get('status', {}).get('name', 'Unknown')
+                                priority = fields.get('priority', {}).get('name', 'None')
+                                project = fields.get('project', {}).get('name', 'Unknown')
+                                result_parts.append(f"{i}. {key}: {summary}")
+                                result_parts.append(f"   Status: {status} | Priority: {priority} | Project: {project}")
+                                result_parts.append(f"   URL: {st.session_state.jira_client.base_url}/browse/{key}")
+                                result_parts.append("")
+                            result = "\n".join(result_parts)
+                        st.session_state.response = result
+                        st.rerun()
+                except Exception as e:
+                    st.session_state.response = f"Error: {str(e)}"
+                    st.rerun()
+            else:
+                st.session_state.quick_query = "What Jira issues are assigned to me?"
+                st.rerun()
         if st.button("📋 Show all projects", use_container_width=True):
             st.session_state.quick_query = "Show me all my Jira projects"
             st.rerun()
@@ -395,8 +427,34 @@ def main():
             st.session_state.quick_query = "Give me a summary of my Jira issues"
             st.rerun()
         if st.button("🚀 Active sprints", use_container_width=True):
-            st.session_state.quick_query = "What are my active Jira sprints?"
-            st.rerun()
+            if st.session_state.jira_client:
+                try:
+                    with st.spinner("Fetching active sprints..."):
+                        active_sprints = st.session_state.jira_client.get_active_sprints()
+                        if not active_sprints:
+                            result = "No active sprints found across all boards."
+                        else:
+                            result_parts = [f"Active Jira Sprints ({len(active_sprints)} total):\n"]
+                            for i, sprint in enumerate(active_sprints, 1):
+                                sprint_id = sprint.get('id', 'Unknown')
+                                name = sprint.get('name', 'Unknown')
+                                state = sprint.get('state', 'Unknown')
+                                start_date = sprint.get('startDate', 'Not started')
+                                end_date = sprint.get('endDate', 'Not ended')
+                                board_name = sprint.get('board_name', 'Unknown')
+                                result_parts.append(f"{i}. {name} (ID: {sprint_id})")
+                                result_parts.append(f"   State: {state} | Board: {board_name}")
+                                result_parts.append(f"   Period: {start_date} to {end_date}")
+                                result_parts.append("")
+                            result = "\n".join(result_parts)
+                        st.session_state.response = result
+                        st.rerun()
+                except Exception as e:
+                    st.session_state.response = f"Error: {str(e)}"
+                    st.rerun()
+            else:
+                st.session_state.quick_query = "What are my active Jira sprints?"
+                st.rerun()
         if st.button("⏰ Recent activity", use_container_width=True):
             st.session_state.quick_query = "Show me recent Jira activity"
             st.rerun()
@@ -409,45 +467,125 @@ def main():
             st.session_state.quick_query = "What are my high priority Jira issues?"
             st.rerun()
         if st.button("✅ Completed tasks", use_container_width=True):
-            st.session_state.quick_query = "Show me my completed Jira issues"
-            st.rerun()
+            if st.session_state.jira_client:
+                try:
+                    with st.spinner("Fetching completed issues..."):
+                        issues = st.session_state.jira_client.get_completed_issues(limit=20)
+                        if not issues:
+                            result = "No completed Jira issues found."
+                        else:
+                            result_parts = [f"My Completed Jira Issues ({len(issues)} total):\n"]
+                            for i, issue in enumerate(issues, 1):
+                                key = issue.get('key', 'Unknown')
+                                fields = issue.get('fields', {})
+                                summary = fields.get('summary', 'No summary')
+                                status = fields.get('status', {}).get('name', 'Unknown')
+                                priority = fields.get('priority', {}).get('name', 'None')
+                                project = fields.get('project', {}).get('name', 'Unknown')
+                                resolution = fields.get('resolution', {})
+                                resolution_name = resolution.get('name', 'Resolved') if resolution else 'Resolved'
+                                resolved_date = fields.get('resolutiondate', 'Unknown')
+                                result_parts.append(f"{i}. {key}: {summary}")
+                                result_parts.append(f"   Status: {status} | Priority: {priority} | Project: {project}")
+                                result_parts.append(f"   Resolution: {resolution_name} | Resolved: {resolved_date}")
+                                result_parts.append(f"   URL: {st.session_state.jira_client.base_url}/browse/{key}")
+                                result_parts.append("")
+                            result = "\n".join(result_parts)
+                        st.session_state.response = result
+                        st.rerun()
+                except Exception as e:
+                    st.session_state.response = f"Error: {str(e)}"
+                    st.rerun()
+            else:
+                st.session_state.quick_query = "Show me my completed Jira issues"
+                st.rerun()
+    
+    # Add a button for boards
+    st.markdown("#### 📊 Jira Boards & Sprints")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📋 Show all boards", use_container_width=True):
+            if st.session_state.jira_client:
+                try:
+                    with st.spinner("Fetching Jira boards..."):
+                        boards = st.session_state.jira_client.get_boards()
+                        if not boards:
+                            result = "No Jira boards found."
+                        else:
+                            result_parts = [f"Jira Boards ({len(boards)} total):\n"]
+                            for i, board in enumerate(boards, 1):
+                                board_id = board.get('id', 'Unknown')
+                                name = board.get('name', 'Unknown')
+                                board_type = board.get('type', 'Unknown')
+                                location = board.get('location', {})
+                                project_name = location.get('projectName', 'Unknown') if location else 'Unknown'
+                                result_parts.append(f"{i}. {name} (ID: {board_id})")
+                                result_parts.append(f"   Type: {board_type} | Project: {project_name}")
+                                result_parts.append("")
+                            result = "\n".join(result_parts)
+                        st.session_state.response = result
+                        st.rerun()
+                except Exception as e:
+                    st.session_state.response = f"Error: {str(e)}"
+                    st.rerun()
+            else:
+                st.session_state.quick_query = "Show me all my Jira boards"
+                st.rerun()
     
     st.divider()
     
     # Custom query input
     st.subheader("💭 Custom Query")
-    user_input = st.text_input("Enter your question:", placeholder="e.g., What meetings do I have today?")
     
-    # Process user input
-    if user_input:
+    # Use a form to prevent infinite loops
+    with st.form("custom_query_form", clear_on_submit=True):
+        user_input = st.text_input("Enter your question:", placeholder="e.g., What meetings do I have today?", key="user_query_input")
+        submitted = st.form_submit_button("Submit", use_container_width=True)
+        
+        if submitted and user_input:
+            # Only process if this is a new query
+            if user_input != st.session_state.last_processed_query:
+                st.session_state.last_processed_query = user_input
+                st.session_state.pending_query = user_input
+                st.rerun()
+    
+    # Process pending query outside the form to avoid spinner issues
+    if hasattr(st.session_state, 'pending_query') and st.session_state.pending_query:
+        query = st.session_state.pending_query
+        st.session_state.pending_query = None  # Clear it immediately
+        
         with st.spinner("Thinking..."):
             try:
                 # Auto-detect GitHub and Jira queries
-                message_lower = user_input.lower()
+                message_lower = query.lower()
                 include_github = any(keyword in message_lower for keyword in 
                                    ['github', 'repo', 'repository', 'issue', 'pr', 'pull request', 'commit',
                                     'deployment', 'deploy', 'deployed', 'deploying', 'production', 'staging'])
+                # Enhanced Jira keyword detection - includes more variations
                 include_jira = any(keyword in message_lower for keyword in 
                                  ['jira', 'ticket', 'tickets', 'task', 'tasks', 'bug', 'bugs', 'sprint', 'sprints',
-                                  'jql', 'project', 'projects', 'assignee', 'assign'])
+                                  'jql', 'project', 'projects', 'assignee', 'assign', 'assigned', 'completed',
+                                  'resolved', 'board', 'boards', 'active sprint', 'my issues', 'my jira',
+                                  'jira issues', 'jira project', 'jira sprint'])
                 
                 response = chat(
-                    message=user_input,
+                    message=query,
                     include_calendar_context=True,
                     include_github_context=include_github,
                     include_jira_context=include_jira
                 )
                 
-                st.markdown("### Response:")
-                st.write(response)
+                st.session_state.response = response
+                st.rerun()
             except Exception as e:
-                error_msg = f"Error: {str(e)}"
-                st.error(error_msg)
+                st.session_state.response = f"Error: {str(e)}"
+                st.rerun()
     
     # Handle quick query
     if hasattr(st.session_state, 'quick_query') and st.session_state.quick_query:
         query = st.session_state.quick_query
-        del st.session_state.quick_query
+        st.session_state.quick_query = None  # Clear it immediately
+        st.session_state.last_processed_query = query  # Track it
         
         with st.spinner("Thinking..."):
             try:
@@ -466,10 +604,16 @@ def main():
                     include_jira_context=include_jira
                 )
                 
-                st.markdown("### Response:")
-                st.write(response)
+                st.session_state.response = response
+                st.rerun()
             except Exception as e:
-                st.error(f"Error: {str(e)}")
+                st.session_state.response = f"Error: {str(e)}"
+                st.rerun()
+    
+    # Display response section (single unified section for all outputs)
+    if hasattr(st.session_state, 'response') and st.session_state.response:
+        st.markdown("### Response:")
+        st.write(st.session_state.response)
 
 if __name__ == "__main__":
     main()
