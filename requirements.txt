@@ -1,0 +1,22 @@
+# MCP Server dependencies
+mcp>=0.1.0
+
+# Google Calendar API
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.1
+google-auth-oauthlib>=1.1.0
+
+# Google Gemini API
+google-generativeai>=0.3.0
+
+# GitHub API
+requests>=2.31.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-dateutil>=2.8.2
+pytz>=2024.1
+
+# Streamlit UI
+streamlit>=1.28.0
+
