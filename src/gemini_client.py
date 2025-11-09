@@ -91,39 +91,45 @@ class GeminiClient:
         conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """
-        Send a chat message to Gemini with optional calendar context.
+        Send a chat message to Gemini with optional context (Calendar, GitHub, Slack).
         
         Args:
             message: User's message/query
-            calendar_context: Optional calendar context to include
+            calendar_context: Optional context string that may contain Calendar, GitHub, and/or Slack data
             conversation_history: Optional list of previous messages in format [{"role": "user", "content": "..."}, ...]
         
         Returns:
             Gemini's response as a string
         """
         try:
-            # Build the prompt with calendar context if provided
+            # Build the prompt with context if provided
             prompt_parts = []
             
             if calendar_context:
                 prompt_parts.append(
-                    "=== CALENDAR DATA ===\n"
-                    "Below is the user's calendar information for the requested time period. "
-                    "Please read and parse ALL of this data carefully, then provide a comprehensive summary.\n\n"
+                    "=== USER DATA (Calendar, GitHub, Slack) ===\n"
+                    "Below is the user's information from various sources (Calendar, GitHub, Slack). "
+                    "Please read and parse ALL of this data carefully, then provide a comprehensive answer based on what's available.\n\n"
                     f"{calendar_context}\n\n"
-                    "=== END CALENDAR DATA ===\n\n"
+                    "=== END USER DATA ===\n\n"
                 )
             
             prompt_parts.append(
-                "You are a helpful AI assistant that helps users manage their calendar. "
+                "You are a helpful AI assistant that helps users manage their calendar, GitHub repositories, and Slack messages. "
                 "IMPORTANT INSTRUCTIONS:\n"
-                "1. Read and parse ALL the calendar data provided above\n"
-                "2. For queries about a week or date range, summarize ALL events in that period\n"
-                "3. Group events by date when presenting the information\n"
-                "4. Include event titles, times, and locations if available\n"
-                "5. If no events are found for a specific date, clearly state that\n"
-                "6. Be accurate and comprehensive - don't miss any events from the calendar data\n"
-                "7. Use the exact dates and times from the calendar data\n\n"
+                "1. Read and parse ALL the data provided above (Calendar, GitHub, Slack, or any combination)\n"
+                "2. Answer questions based on the relevant data source:\n"
+                "   - For calendar questions: Use calendar data to answer about schedule, events, availability\n"
+                "   - For GitHub questions: Use GitHub data to answer about repositories, issues, PRs, commits, deployments\n"
+                "   - For Slack questions: Use Slack data to answer about messages, channels, mentions, unread messages\n"
+                "3. If the user asks about Slack messages/channels/mentions, look for SLACK data in the context above\n"
+                "4. If the user asks about GitHub repos/issues/PRs, look for GITHUB data in the context above\n"
+                "5. If the user asks about calendar/events/schedule, look for CALENDAR data in the context above\n"
+                "6. If no relevant data is found for a question, clearly state that the data is not available\n"
+                "7. Be accurate and comprehensive - use ALL available data from the context\n"
+                "8. For calendar queries: Group events by date, include titles, times, and locations\n"
+                "9. For GitHub queries: Include repository names, issue/PR numbers, commit SHAs, deployment statuses\n"
+                "10. For Slack queries: Include channel names, message counts, mention details\n\n"
             )
             
             # Add conversation history if provided

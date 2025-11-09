@@ -20,3 +20,6 @@ pytz>=2024.1
 # Streamlit UI
 streamlit>=1.28.0
 
+# Slack API
+slack-sdk>=3.23.0
+

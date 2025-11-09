@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Project Management Assistant Dashboard
-A lightweight dashboard integrating GitHub and Google Calendar for project management.
+A lightweight dashboard integrating GitHub, Google Calendar, and Slack for project management.
 """
 
 import streamlit as st
@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from src.server import chat
 from src.calendar_client import CalendarClient
 from src.github_client import GitHubClient
+from src.slack_client import SlackClient
 from src.query_analyzer import QueryAnalyzer
 
 # Page configuration
@@ -83,8 +84,11 @@ if "calendar_client" not in st.session_state:
 if "github_client" not in st.session_state:
     st.session_state.github_client = None
 
+if "slack_client" not in st.session_state:
+    st.session_state.slack_client = None
+
 def initialize_clients():
-    """Initialize calendar and GitHub clients."""
+    """Initialize calendar, GitHub, and Slack clients."""
     try:
         if st.session_state.calendar_client is None:
             credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "config/credentials.json")
@@ -106,6 +110,13 @@ def initialize_clients():
             st.session_state.github_client = GitHubClient()
     except Exception as e:
         st.session_state.github_client = None
+        # Don't show error to user, just silently fail
+    
+    try:
+        if st.session_state.slack_client is None:
+            st.session_state.slack_client = SlackClient()
+    except Exception as e:
+        st.session_state.slack_client = None
         # Don't show error to user, just silently fail
 
 def format_time(dt_str):
@@ -216,6 +227,7 @@ def main():
         if st.button("🔄 Refresh Data", use_container_width=True):
             st.session_state.calendar_client = None
             st.session_state.github_client = None
+            st.session_state.slack_client = None
             initialize_clients()
             st.rerun()
         
@@ -225,23 +237,27 @@ def main():
         st.subheader("🔌 Connections")
         calendar_status = "✅ Connected" if st.session_state.calendar_client else "❌ Not Connected"
         github_status = "✅ Connected" if st.session_state.github_client else "❌ Not Connected"
+        slack_status = "✅ Connected" if st.session_state.slack_client else "❌ Not Connected"
         
         st.write(f"**Calendar:** {calendar_status}")
         st.write(f"**GitHub:** {github_status}")
+        st.write(f"**Slack:** {slack_status}")
         
         if not st.session_state.calendar_client:
             st.info("💡 Configure Google Calendar credentials to enable calendar features.")
         if not st.session_state.github_client:
             st.info("💡 Set GITHUB_TOKEN in .env to enable GitHub features.")
+        if not st.session_state.slack_client:
+            st.info("💡 Set SLACK_USER_TOKEN in .env to enable Slack features.")
         
         st.divider()
         
         st.subheader("💬 AI Assistant")
-        st.caption("Ask questions about your projects, schedule, or GitHub activity")
+        st.caption("Ask questions about your projects, schedule, GitHub activity, or Slack messages")
     
     # Main content - AI Assistant only
     st.header("💬 AI Assistant")
-    st.caption("Ask me anything about your projects, schedule, or GitHub activity")
+    st.caption("Ask me anything about your projects, schedule, GitHub activity, or Slack messages")
     
     # Predefined queries organized by category
     st.subheader("📋 Predefined Queries")
@@ -324,6 +340,45 @@ def main():
     
     st.divider()
     
+    # Slack queries
+    st.markdown("#### 💬 Slack & Messages")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📬 Unread Slack messages", use_container_width=True):
+            st.session_state.quick_query = "What are my unread Slack messages?"
+            st.rerun()
+        if st.button("🔔 Recent mentions", use_container_width=True):
+            st.session_state.quick_query = "Show me my recent Slack mentions"
+            st.rerun()
+        if st.button("📋 List Slack channels", use_container_width=True):
+            st.session_state.quick_query = "Show me my Slack channels"
+            st.rerun()
+    
+    with col2:
+        if st.button("💬 Channel activity", use_container_width=True):
+            st.session_state.quick_query = "What's happening in my Slack channels?"
+            st.rerun()
+        if st.button("🔍 Search messages", use_container_width=True):
+            st.session_state.quick_query = "Search my Slack messages"
+            st.rerun()
+        if st.button("📊 Slack summary", use_container_width=True):
+            st.session_state.quick_query = "Give me a summary of my Slack activity"
+            st.rerun()
+    
+    with col3:
+        if st.button("📨 Direct messages", use_container_width=True):
+            st.session_state.quick_query = "Show me my Slack direct messages"
+            st.rerun()
+        if st.button("🧵 Thread activity", use_container_width=True):
+            st.session_state.quick_query = "What Slack threads need my attention?"
+            st.rerun()
+        if st.button("📈 Activity overview", use_container_width=True):
+            st.session_state.quick_query = "What's my Slack activity overview?"
+            st.rerun()
+    
+    st.divider()
+    
     # Custom query input
     st.subheader("💭 Custom Query")
     user_input = st.text_input("Enter your question:", placeholder="e.g., What meetings do I have today?")
@@ -332,16 +387,20 @@ def main():
     if user_input:
         with st.spinner("Thinking..."):
             try:
-                # Auto-detect GitHub queries
+                # Auto-detect query types
                 message_lower = user_input.lower()
                 include_github = any(keyword in message_lower for keyword in 
                                    ['github', 'repo', 'repository', 'issue', 'pr', 'pull request', 'commit',
                                     'deployment', 'deploy', 'deployed', 'deploying', 'production', 'staging'])
+                include_slack = any(keyword in message_lower for keyword in 
+                                  ['slack', 'message', 'messages', 'channel', 'channels', 'mention', 'mentions',
+                                   'unread', 'dm', 'direct message', 'thread', 'threads'])
                 
                 response = chat(
                     message=user_input,
                     include_calendar_context=True,
-                    include_github_context=include_github
+                    include_github_context=include_github,
+                    include_slack_context=include_slack
                 )
                 
                 st.markdown("### Response:")
@@ -361,11 +420,15 @@ def main():
                 include_github = any(keyword in message_lower for keyword in 
                                    ['github', 'repo', 'repository', 'issue', 'pr', 'pull request', 'commit',
                                     'deployment', 'deploy', 'deployed', 'deploying', 'production', 'staging'])
+                include_slack = any(keyword in message_lower for keyword in 
+                                  ['slack', 'message', 'messages', 'channel', 'channels', 'mention', 'mentions',
+                                   'unread', 'dm', 'direct message', 'thread', 'threads'])
                 
                 response = chat(
                     message=query,
                     include_calendar_context=True,
-                    include_github_context=include_github
+                    include_github_context=include_github,
+                    include_slack_context=include_slack
                 )
                 
                 st.markdown("### Response:")

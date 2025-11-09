@@ -52,6 +52,14 @@ except ImportError:
     GITHUB_AVAILABLE = False
     GitHubClient = None
 
+# Try to import Slack client (optional)
+try:
+    from .slack_client import SlackClient
+    SLACK_AVAILABLE = True
+except ImportError:
+    SLACK_AVAILABLE = False
+    SlackClient = None
+
 
 # Initialize MCP server
 mcp = FastMCP("Calendar & GitHub MCP Server")
@@ -59,6 +67,7 @@ mcp = FastMCP("Calendar & GitHub MCP Server")
 # Initialize components
 calendar_client: Optional[CalendarClient] = None
 github_client: Optional[GitHubClient] = None
+slack_client: Optional[SlackClient] = None
 query_analyzer = QueryAnalyzer()
 context_formatter = ContextFormatter()
 gemini_client: Optional[GeminiClient] = None
@@ -115,6 +124,20 @@ def initialize_gemini_client():
             gemini_client = GeminiClient()
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Gemini client: {e}")
+
+
+def initialize_slack_client():
+    """Initialize the Slack client."""
+    global slack_client
+    if slack_client is None:
+        if not SLACK_AVAILABLE:
+            raise RuntimeError(
+                "Slack client not available. Install slack-sdk package and set SLACK_USER_TOKEN."
+            )
+        try:
+            slack_client = SlackClient()
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Slack client: {e}")
 
 
 @mcp.tool()
@@ -611,15 +634,143 @@ def get_github_deployments(owner: Optional[str] = None, repo: Optional[str] = No
 
 
 @mcp.tool()
-def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False) -> str:
+def get_slack_channels() -> str:
     """
-    Chat with the AI assistant about your calendar and GitHub. This is a conversational interface
-    that uses Gemini AI to answer questions about your schedule, availability, events, and GitHub activity.
+    Get list of Slack channels the user has access to.
+    
+    Returns:
+        Formatted string with channel information
+    """
+    try:
+        initialize_slack_client()
+        
+        channels = slack_client.get_channels()
+        
+        if not channels:
+            return "No Slack channels found."
+        
+        result_parts = [f"SLACK CHANNELS ({len(channels)} total):\n"]
+        result_parts.append("-" * 50)
+        
+        for i, channel in enumerate(channels[:30], 1):  # Limit to 30
+            name = channel.get('name', 'Unknown')
+            is_private = channel.get('is_private', False)
+            is_archived = channel.get('is_archived', False)
+            topic = channel.get('topic', {}).get('value', '') or 'No topic'
+            purpose = channel.get('purpose', {}).get('value', '') or 'No purpose'
+            num_members = channel.get('num_members', 0)
+            
+            channel_line = f"  {i}. #{name}"
+            if is_private:
+                channel_line += " [PRIVATE]"
+            if is_archived:
+                channel_line += " [ARCHIVED]"
+            channel_line += f" | {num_members} members"
+            
+            result_parts.append(channel_line)
+            if topic and topic != 'No topic':
+                result_parts.append(f"     Topic: {topic[:100]}")
+            if purpose and purpose != 'No purpose':
+                result_parts.append(f"     Purpose: {purpose[:100]}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_slack_channels: {e}", exc_info=True)
+        return f"Error fetching Slack channels: {str(e)}"
+
+
+@mcp.tool()
+def get_slack_unread() -> str:
+    """
+    Get Slack channels with unread messages.
+    
+    Returns:
+        Formatted string with unread channel information
+    """
+    try:
+        initialize_slack_client()
+        
+        unread_channels = slack_client.get_unread_channels()
+        
+        if not unread_channels:
+            return "No unread messages in Slack channels."
+        
+        result_parts = [f"UNREAD SLACK CHANNELS ({len(unread_channels)} total):\n"]
+        result_parts.append("-" * 50)
+        
+        for i, channel in enumerate(unread_channels, 1):
+            name = channel.get('name', 'Unknown')
+            unread_count = channel.get('unread_count', 0)
+            
+            result_parts.append(f"  {i}. #{name} - {unread_count} unread message(s)")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_slack_unread: {e}", exc_info=True)
+        return f"Error fetching unread Slack messages: {str(e)}"
+
+
+@mcp.tool()
+def get_slack_mentions(days: int = 7) -> str:
+    """
+    Get recent Slack messages where the user was mentioned.
+    
+    Args:
+        days: Number of days to look back (default: 7)
+    
+    Returns:
+        Formatted string with mention information
+    """
+    try:
+        initialize_slack_client()
+        
+        mentions = slack_client.get_mentions(days=days, limit=20)
+        
+        if not mentions:
+            return f"No Slack mentions found in the last {days} days."
+        
+        result_parts = [f"SLACK MENTIONS ({len(mentions)} total in last {days} days):\n"]
+        result_parts.append("-" * 50)
+        
+        for i, mention in enumerate(mentions, 1):
+            channel_name = mention.get('channel_name', 'Unknown')
+            text = mention.get('text', '')[:200]
+            user = mention.get('user', 'Unknown')
+            timestamp = mention.get('ts', '')
+            
+            result_parts.append(f"  {i}. In #{channel_name}:")
+            result_parts.append(f"     {text}")
+            if timestamp:
+                try:
+                    from datetime import datetime
+                    ts_float = float(timestamp)
+                    dt = datetime.fromtimestamp(ts_float)
+                    result_parts.append(f"     Time: {dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                except:
+                    pass
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_slack_mentions: {e}", exc_info=True)
+        return f"Error fetching Slack mentions: {str(e)}"
+
+
+@mcp.tool()
+def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False, include_slack_context: bool = False) -> str:
+    """
+    Chat with the AI assistant about your calendar, GitHub, and Slack. This is a conversational interface
+    that uses Gemini AI to answer questions about your schedule, availability, events, GitHub activity, and Slack messages.
     
     Args:
         message: Your message or question
         include_calendar_context: Whether to include calendar context in the response (default: True)
         include_github_context: Whether to include GitHub context in the response (default: False)
+        include_slack_context: Whether to include Slack context in the response (default: False)
     
     Returns:
         AI assistant's response
@@ -634,6 +785,15 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         is_multi_intent = analysis.get('is_multi_intent', False)
         entities = analysis.get('entities', {})
         
+        # Detect Slack-related queries
+        is_slack_query = any(keyword in message_lower for keyword in 
+                           ['slack', 'message', 'messages', 'channel', 'channels', 'mention', 'mentions',
+                            'unread', 'dm', 'direct message', 'thread', 'threads'])
+        
+        # Auto-enable Slack context if query mentions Slack
+        if is_slack_query:
+            include_slack_context = True
+        
         # Use query domain to determine context needs
         if query_domain == 'github' or (query_domain == 'both' and not include_calendar_context):
             include_calendar_context = False
@@ -647,6 +807,7 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         
         calendar_context = None
         github_context = None
+        slack_context = None
         correlation_context = None
         
         # Fetch calendar context (with caching, ranking, and summarization)
@@ -1044,7 +1205,107 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
             except Exception as e:
                 github_context = f"Note: Could not fetch GitHub context: {str(e)}"
         
-        # Multi-source correlation (if both calendar and GitHub data available)
+        # Fetch Slack context if requested
+        if include_slack_context:
+            try:
+                initialize_slack_client()
+                
+                slack_context_parts = []
+                
+                # Get user info
+                try:
+                    user_info = slack_client.get_user_info()
+                    user_name = user_info.get('user', 'Unknown')
+                    team_name = user_info.get('team', 'Unknown')
+                    slack_context_parts.append(f"SLACK USER: {user_name} (Team: {team_name})")
+                    slack_context_parts.append("")
+                except Exception:
+                    pass
+                
+                # Check what type of Slack data is needed
+                needs_channels = any(keyword in message_lower for keyword in 
+                                   ['channel', 'channels', 'list channels'])
+                needs_unread = any(keyword in message_lower for keyword in 
+                                 ['unread', 'unread messages', 'unread channel'])
+                needs_mentions = any(keyword in message_lower for keyword in 
+                                   ['mention', 'mentions', 'mentioned', 'tagged'])
+                
+                # Get unread channels
+                if needs_unread or not (needs_channels or needs_mentions):
+                    try:
+                        unread_channels = slack_client.get_unread_channels()
+                        if unread_channels:
+                            slack_context_parts.append(f"UNREAD CHANNELS ({len(unread_channels)} total):")
+                            slack_context_parts.append("-" * 50)
+                            for i, channel in enumerate(unread_channels[:10], 1):
+                                name = channel.get('name', 'Unknown')
+                                unread_count = channel.get('unread_count', 0)
+                                slack_context_parts.append(f"  {i}. #{name} - {unread_count} unread message(s)")
+                            slack_context_parts.append("")
+                        else:
+                            # Explicitly state if no unread channels found
+                            slack_context_parts.append("UNREAD CHANNELS: No unread channels found.")
+                            slack_context_parts.append("")
+                    except Exception as e:
+                        slack_context_parts.append(f"Note: Could not fetch unread channels: {str(e)}")
+                        slack_context_parts.append("")
+                
+                # Get mentions
+                if needs_mentions or not (needs_channels or needs_unread):
+                    try:
+                        mentions = slack_client.get_mentions(days=7, limit=10)
+                        if mentions:
+                            slack_context_parts.append(f"RECENT MENTIONS ({len(mentions)} total):")
+                            slack_context_parts.append("-" * 50)
+                            for i, mention in enumerate(mentions, 1):
+                                channel_name = mention.get('channel_name', 'Unknown')
+                                text = mention.get('text', '')[:150]
+                                slack_context_parts.append(f"  {i}. In #{channel_name}: {text}")
+                            slack_context_parts.append("")
+                        else:
+                            # Explicitly state if no mentions found
+                            slack_context_parts.append("RECENT MENTIONS: No mentions found in the last 7 days.")
+                            slack_context_parts.append("")
+                    except Exception as e:
+                        slack_context_parts.append(f"Note: Could not fetch mentions: {str(e)}")
+                        slack_context_parts.append("")
+                
+                # Get channels list if specifically requested
+                if needs_channels:
+                    try:
+                        channels = slack_client.get_channels()
+                        if channels:
+                            slack_context_parts.append(f"CHANNELS ({len(channels)} total):")
+                            slack_context_parts.append("-" * 50)
+                            for i, channel in enumerate(channels[:20], 1):
+                                name = channel.get('name', 'Unknown')
+                                is_private = channel.get('is_private', False)
+                                num_members = channel.get('num_members', 0)
+                                channel_line = f"  {i}. #{name}"
+                                if is_private:
+                                    channel_line += " [PRIVATE]"
+                                channel_line += f" | {num_members} members"
+                                slack_context_parts.append(channel_line)
+                            slack_context_parts.append("")
+                    except Exception as e:
+                        pass
+                
+                # Get recent activity summary if nothing specific requested
+                if not (needs_channels or needs_unread or needs_mentions):
+                    try:
+                        activity = slack_client.get_recent_activity(days=7, limit=10)
+                        slack_context_parts.append("SLACK ACTIVITY SUMMARY:")
+                        slack_context_parts.append(f"Unread Channels: {activity.get('unread_channels_count', 0)}")
+                        slack_context_parts.append(f"Recent Mentions: {activity.get('mentions_count', 0)}")
+                        slack_context_parts.append("")
+                    except Exception:
+                        pass
+                
+                slack_context = "\n".join(slack_context_parts) if slack_context_parts else "No Slack data available."
+            except Exception as e:
+                slack_context = f"Note: Could not fetch Slack context: {str(e)}"
+        
+        # Multi-source correlation (if calendar, GitHub, and/or Slack data available)
         if include_calendar_context and include_github_context and calendar_context and github_context:
             try:
                 # Get raw data for correlation (use cached or fetch minimal set)
@@ -1091,12 +1352,14 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         
         # Combine and compress contexts
         combined_context = None
-        if calendar_context or github_context or correlation_context:
+        if calendar_context or github_context or slack_context or correlation_context:
             context_parts = []
             if calendar_context:
                 context_parts.append(calendar_context)
             if github_context:
                 context_parts.append(github_context)
+            if slack_context:
+                context_parts.append(slack_context)
             if correlation_context:
                 context_parts.append(correlation_context)
             
