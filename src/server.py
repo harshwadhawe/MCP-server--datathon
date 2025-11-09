@@ -52,13 +52,22 @@ except ImportError:
     GITHUB_AVAILABLE = False
     GitHubClient = None
 
+# Try to import Jira client (optional)
+try:
+    from .jira_client import JiraClient
+    JIRA_AVAILABLE = True
+except ImportError:
+    JIRA_AVAILABLE = False
+    JiraClient = None
+
 
 # Initialize MCP server
-mcp = FastMCP("Calendar & GitHub MCP Server")
+mcp = FastMCP("Calendar, GitHub & Jira MCP Server")
 
 # Initialize components
 calendar_client: Optional[CalendarClient] = None
 github_client: Optional[GitHubClient] = None
+jira_client: Optional[JiraClient] = None
 query_analyzer = QueryAnalyzer()
 context_formatter = ContextFormatter()
 gemini_client: Optional[GeminiClient] = None
@@ -102,6 +111,33 @@ def initialize_github_client():
             github_client = GitHubClient()
         except Exception as e:
             raise RuntimeError(f"Failed to initialize GitHub client: {e}")
+
+
+def initialize_jira_client():
+    """Initialize the Jira client."""
+    global jira_client
+    if jira_client is None:
+        if not JIRA_AVAILABLE:
+            raise RuntimeError(
+                "Jira client not available. Install requests package and set JIRA_URL, JIRA_EMAIL, and JIRA_API_TOKEN."
+            )
+        try:
+            base_url = os.getenv("JIRA_URL")
+            email = os.getenv("JIRA_EMAIL")
+            api_token = os.getenv("JIRA_API_TOKEN")
+            
+            if not base_url or not email or not api_token:
+                raise ValueError(
+                    "Jira credentials not found. Please set JIRA_URL, JIRA_EMAIL, and JIRA_API_TOKEN in your .env file."
+                )
+            
+            jira_client = JiraClient(
+                base_url=base_url,
+                email=email,
+                api_token=api_token
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Jira client: {e}")
 
 
 def initialize_gemini_client():
@@ -611,15 +647,422 @@ def get_github_deployments(owner: Optional[str] = None, repo: Optional[str] = No
 
 
 @mcp.tool()
-def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False) -> str:
+def get_jira_projects() -> str:
     """
-    Chat with the AI assistant about your calendar and GitHub. This is a conversational interface
-    that uses Gemini AI to answer questions about your schedule, availability, events, and GitHub activity.
+    Get all accessible Jira projects.
+    
+    Returns:
+        Formatted list of Jira projects
+    """
+    try:
+        initialize_jira_client()
+        
+        projects = jira_client.get_projects()
+        
+        if not projects:
+            return "No Jira projects found."
+        
+        result_parts = [f"Jira Projects ({len(projects)} total):\n"]
+        
+        for i, project in enumerate(projects, 1):
+            key = project.get('key', 'Unknown')
+            name = project.get('name', 'Unknown')
+            project_type = project.get('projectTypeKey', 'unknown')
+            description = project.get('description', '') or 'No description'
+            
+            result_parts.append(f"{i}. {key}: {name}")
+            result_parts.append(f"   Type: {project_type}")
+            result_parts.append(f"   {description[:100]}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_projects: {e}", exc_info=True)
+        return f"Error fetching Jira projects: {str(e)}"
+
+
+@mcp.tool()
+def get_jira_issues(jql: str, max_results: int = 20) -> str:
+    """
+    Get Jira issues using a JQL (Jira Query Language) query.
+    
+    Args:
+        jql: Jira Query Language string (e.g., "assignee=currentUser() AND status!=Done")
+        max_results: Maximum number of issues to return (default: 20)
+    
+    Returns:
+        Formatted list of Jira issues
+    """
+    try:
+        initialize_jira_client()
+        
+        issues = jira_client.get_issues(jql=jql, max_results=max_results)
+        
+        if not issues:
+            return f"No issues found matching JQL: {jql}"
+        
+        result_parts = [f"Jira Issues ({len(issues)} found):\n"]
+        result_parts.append(f"JQL: {jql}\n")
+        
+        for i, issue in enumerate(issues, 1):
+            key = issue.get('key', 'Unknown')
+            fields = issue.get('fields', {})
+            summary = fields.get('summary', 'No summary')
+            status = fields.get('status', {}).get('name', 'Unknown')
+            assignee = fields.get('assignee', {})
+            assignee_name = assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
+            priority = fields.get('priority', {}).get('name', 'None')
+            project = fields.get('project', {}).get('name', 'Unknown')
+            
+            result_parts.append(f"{i}. {key}: {summary}")
+            result_parts.append(f"   Status: {status} | Priority: {priority}")
+            result_parts.append(f"   Project: {project} | Assignee: {assignee_name}")
+            result_parts.append(f"   URL: {jira_client.base_url}/browse/{key}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_issues: {e}", exc_info=True)
+        return f"Error fetching Jira issues: {str(e)}"
+
+
+@mcp.tool()
+def get_jira_issue_details(issue_key: str) -> str:
+    """
+    Get detailed information about a specific Jira issue.
+    
+    Args:
+        issue_key: Jira issue key (e.g., "PROJ-123")
+    
+    Returns:
+        Formatted details of the Jira issue
+    """
+    try:
+        initialize_jira_client()
+        
+        issue = jira_client.get_issue_details(issue_key)
+        
+        fields = issue.get('fields', {})
+        key = issue.get('key', issue_key)
+        summary = fields.get('summary', 'No summary')
+        description = fields.get('description', 'No description')
+        status = fields.get('status', {}).get('name', 'Unknown')
+        assignee = fields.get('assignee', {})
+        assignee_name = assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
+        reporter = fields.get('reporter', {})
+        reporter_name = reporter.get('displayName', 'Unknown') if reporter else 'Unknown'
+        priority = fields.get('priority', {}).get('name', 'None')
+        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
+        project = fields.get('project', {}).get('name', 'Unknown')
+        created = fields.get('created', '')
+        updated = fields.get('updated', '')
+        
+        result_parts = [f"Jira Issue: {key}\n"]
+        result_parts.append("=" * 50)
+        result_parts.append(f"Summary: {summary}")
+        result_parts.append(f"Type: {issue_type} | Status: {status} | Priority: {priority}")
+        result_parts.append(f"Project: {project}")
+        result_parts.append(f"Assignee: {assignee_name} | Reporter: {reporter_name}")
+        if created:
+            result_parts.append(f"Created: {created}")
+        if updated:
+            result_parts.append(f"Updated: {updated}")
+        result_parts.append("")
+        result_parts.append("Description:")
+        result_parts.append(str(description)[:500])  # Limit description length
+        result_parts.append("")
+        result_parts.append(f"URL: {jira_client.base_url}/browse/{key}")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_issue_details: {e}", exc_info=True)
+        return f"Error fetching Jira issue details: {str(e)}"
+
+
+@mcp.tool()
+def test_jira_assignee_query(assignee: str) -> str:
+    """
+    Test Jira queries with a specific assignee value to debug why issues aren't found.
+    This helps diagnose if the endpoint is working correctly.
+    
+    Args:
+        assignee: The assignee value to test (username, email, etc.)
+    
+    Returns:
+        Detailed test results showing what queries were tried and what was found
+    """
+    try:
+        initialize_jira_client()
+        
+        # Get current user info for context
+        try:
+            current_user = jira_client.get_current_user()
+            user_email = current_user.get('emailAddress', jira_client.email)
+            user_name = current_user.get('displayName', user_email)
+            account_id = current_user.get('accountId', 'unknown')
+        except:
+            user_email = jira_client.email
+            user_name = user_email
+            account_id = 'unknown'
+        
+        result_parts = [
+            "Jira Assignee Query Test",
+            "=" * 60,
+            f"Testing assignee: {assignee}",
+            "",
+            f"Current User Context:",
+            f"  Email: {user_email}",
+            f"  Name: {user_name}",
+            f"  Account ID: {account_id}",
+            "",
+        ]
+        
+        # Test the assignee value
+        test_result = jira_client.test_assignee_query(assignee)
+        
+        result_parts.append(f"Queries Tried ({len(test_result['queries_tried'])}):")
+        for jql in test_result['queries_tried']:
+            result_parts.append(f"  - {jql}")
+        
+        result_parts.append("")
+        
+        if test_result.get('successful_query'):
+            result_parts.append(f"✅ SUCCESS! Found {len(test_result['results'])} issue(s) with query:")
+            result_parts.append(f"   {test_result['successful_query']}")
+            result_parts.append("")
+            result_parts.append("Issues Found:")
+            for i, issue in enumerate(test_result['results'], 1):
+                key = issue.get('key', 'Unknown')
+                fields = issue.get('fields', {})
+                summary = fields.get('summary', 'No summary')
+                status = fields.get('status', {}).get('name', 'Unknown')
+                assignee_field = fields.get('assignee', {})
+                assignee_email = assignee_field.get('emailAddress', 'N/A') if assignee_field else 'Unassigned'
+                assignee_name = assignee_field.get('displayName', 'N/A') if assignee_field else 'Unassigned'
+                assignee_account = assignee_field.get('accountId', 'N/A') if assignee_field else 'N/A'
+                
+                result_parts.append(f"  {i}. {key}: {summary}")
+                result_parts.append(f"     Status: {status}")
+                result_parts.append(f"     Assignee Email: {assignee_email}")
+                result_parts.append(f"     Assignee Name: {assignee_name}")
+                result_parts.append(f"     Assignee Account ID: {assignee_account}")
+                result_parts.append("")
+        else:
+            result_parts.append("❌ No issues found with any query format")
+            result_parts.append("")
+            
+            if test_result['errors']:
+                result_parts.append("Errors encountered:")
+                for error in test_result['errors']:
+                    result_parts.append(f"  - {error}")
+                result_parts.append("")
+            
+            result_parts.append("💡 Possible reasons:")
+            result_parts.append("  1. The assignee format in Jira is different (check in Jira UI)")
+            result_parts.append("  2. The issue might be in a project you don't have API access to")
+            result_parts.append("  3. The JQL syntax might need adjustment for your Jira version")
+            result_parts.append("  4. Try querying by accountId instead: test_jira_assignee_query(account_id)")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in test_jira_assignee_query: {e}", exc_info=True)
+        return f"Error testing assignee query: {str(e)}"
+
+
+@mcp.tool()
+def get_jira_current_user() -> str:
+    """
+    Get information about the currently authenticated Jira user.
+    
+    This shows "who you are" based on your API token authentication.
+    The API token is tied to a specific Jira account, and Jira uses it
+    to identify which account you are when making API calls.
+    
+    Returns:
+        Information about the authenticated Jira user
+    """
+    try:
+        initialize_jira_client()
+        
+        current_user = jira_client.get_current_user()
+        
+        email = current_user.get('emailAddress', jira_client.email)
+        display_name = current_user.get('displayName', email)
+        account_id = current_user.get('accountId', 'unknown')
+        account_type = current_user.get('accountType', 'unknown')
+        
+        result_parts = [
+            "Authenticated Jira User Information:",
+            "=" * 50,
+            f"Display Name: {display_name}",
+            f"Email: {email}",
+            f"Account ID: {account_id}",
+            f"Account Type: {account_type}",
+            "",
+            "ℹ️ How 'you' is determined:",
+            "1. Your JIRA_API_TOKEN is tied to a specific Jira account",
+            "2. When you authenticate, Jira identifies you based on the token",
+            "3. The system uses this identity to query 'your' assigned issues",
+            "4. The email in your .env file (JIRA_EMAIL) should match this account",
+        ]
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_current_user: {e}", exc_info=True)
+        return f"Error fetching current user info: {str(e)}"
+
+
+@mcp.tool()
+def get_jira_user_issues(email: Optional[str] = None, limit: int = 10) -> str:
+    """
+    Get issues assigned to a specific user (or current user if None).
+    
+    The "current user" is determined by the Jira API token you provided:
+    - The API token is tied to a specific Jira account
+    - Jira uses the token to identify which account you are
+    - The system uses `currentUser()` in JQL queries or falls back to your email
+    
+    Args:
+        email: User email (optional, defaults to authenticated user from API token)
+        limit: Maximum number of issues to return (default: 10)
+    
+    Returns:
+        Formatted list of assigned Jira issues
+    """
+    try:
+        initialize_jira_client()
+        
+        # Get current user info to show who "you" are
+        try:
+            current_user = jira_client.get_current_user()
+            authenticated_email = current_user.get('emailAddress', jira_client.email)
+            authenticated_name = current_user.get('displayName', authenticated_email)
+        except:
+            authenticated_email = jira_client.email
+            authenticated_name = authenticated_email
+        
+        # Try to get issues - first without resolved, then with all issues
+        issues = jira_client.get_user_assigned_issues(email=email, limit=limit, include_resolved=False)
+        
+        # If no unresolved issues found, try including resolved issues
+        if not issues:
+            issues = jira_client.get_user_assigned_issues(email=email, limit=limit, include_resolved=True)
+        
+        if not issues:
+            user = email or authenticated_name or authenticated_email
+            target_email = email or authenticated_email
+            
+            # Try a direct query with the specific email to debug
+            debug_info = [
+                f"No issues found assigned to {user}.\n",
+                f"ℹ️ Debugging Information:",
+                f"   Authenticated Email: {authenticated_email}",
+                f"   Authenticated Name: {authenticated_name}",
+                f"   Email in .env (JIRA_EMAIL): {jira_client.email}",
+                f"   Query Email Used: {target_email}",
+                "",
+                "💡 Troubleshooting:",
+                f"1. Verify the issue is assigned to: {target_email}",
+                "2. Check if the issue status is 'Done' or 'Resolved' (these are filtered by default)",
+                "3. Try querying with: get_jira_issues('assignee = \"aupragathii@tamu.edu\"')",
+                "4. Verify your JIRA_EMAIL in .env matches the email in your Jira account",
+                "5. Check if the authenticated user email matches the assignee email",
+            ]
+            
+            # If user provided specific email, add note
+            if email and email != authenticated_email:
+                debug_info.append(f"\n⚠️ Note: You queried for '{email}' but you're authenticated as '{authenticated_email}'")
+                debug_info.append("   Make sure the email matches the account that has the issue assigned.")
+            
+            return "\n".join(debug_info)
+        
+        result_parts = [f"Assigned Jira Issues ({len(issues)} total):\n"]
+        
+        for i, issue in enumerate(issues, 1):
+            key = issue.get('key', 'Unknown')
+            fields = issue.get('fields', {})
+            summary = fields.get('summary', 'No summary')
+            status = fields.get('status', {}).get('name', 'Unknown')
+            priority = fields.get('priority', {}).get('name', 'None')
+            project = fields.get('project', {}).get('name', 'Unknown')
+            
+            result_parts.append(f"{i}. {key}: {summary}")
+            result_parts.append(f"   Status: {status} | Priority: {priority} | Project: {project}")
+            result_parts.append(f"   URL: {jira_client.base_url}/browse/{key}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_user_issues: {e}", exc_info=True)
+        error_msg = str(e)
+        if "410" in error_msg or "Gone" in error_msg:
+            return (
+                f"Error: Jira API returned 410 Gone. This usually means:\n"
+                f"1. The API endpoint is deprecated for your Jira version\n"
+                f"2. Your Jira instance may need API v2 instead of v3\n"
+                f"3. Check your Jira instance version and API compatibility\n\n"
+                f"Original error: {error_msg}"
+            )
+        return f"Error fetching Jira user issues: {error_msg}"
+
+
+@mcp.tool()
+def get_jira_sprints(board_id: str) -> str:
+    """
+    Get all sprints for a Jira board.
+    
+    Args:
+        board_id: ID of the Jira board (Kanban/Scrum)
+    
+    Returns:
+        Formatted list of sprints
+    """
+    try:
+        initialize_jira_client()
+        
+        sprints = jira_client.get_sprints(board_id)
+        
+        if not sprints:
+            return f"No sprints found for board {board_id}."
+        
+        result_parts = [f"Jira Sprints for Board {board_id} ({len(sprints)} total):\n"]
+        
+        for i, sprint in enumerate(sprints, 1):
+            sprint_id = sprint.get('id', 'Unknown')
+            name = sprint.get('name', 'Unknown')
+            state = sprint.get('state', 'Unknown')
+            start_date = sprint.get('startDate', 'Not started')
+            end_date = sprint.get('endDate', 'Not ended')
+            
+            result_parts.append(f"{i}. {name} (ID: {sprint_id})")
+            result_parts.append(f"   State: {state}")
+            result_parts.append(f"   Period: {start_date} to {end_date}")
+            result_parts.append("")
+        
+        return "\n".join(result_parts)
+    
+    except Exception as e:
+        logger.error(f"Error in get_jira_sprints: {e}", exc_info=True)
+        return f"Error fetching Jira sprints: {str(e)}"
+
+
+@mcp.tool()
+def chat(message: str, include_calendar_context: bool = True, include_github_context: bool = False, include_jira_context: bool = False) -> str:
+    """
+    Chat with the AI assistant about your calendar, GitHub, and Jira. This is a conversational interface
+    that uses Gemini AI to answer questions about your schedule, availability, events, GitHub activity, and Jira issues.
     
     Args:
         message: Your message or question
         include_calendar_context: Whether to include calendar context in the response (default: True)
         include_github_context: Whether to include GitHub context in the response (default: False)
+        include_jira_context: Whether to include Jira context in the response (default: False)
     
     Returns:
         AI assistant's response
@@ -634,6 +1077,11 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
         is_multi_intent = analysis.get('is_multi_intent', False)
         entities = analysis.get('entities', {})
         
+        # Detect if user is asking about their identity in Jira
+        is_identity_query = any(keyword in message_lower for keyword in 
+                               ['who am i', 'who are you', 'my account', 'my user', 'my identity', 
+                                'authenticated', 'current user', 'who is', 'what is my'])
+        
         # Use query domain to determine context needs
         if query_domain == 'github' or (query_domain == 'both' and not include_calendar_context):
             include_calendar_context = False
@@ -645,8 +1093,13 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
             include_calendar_context = True
             include_github_context = True
         
+        # If asking about identity and Jira is mentioned, include Jira context
+        if is_identity_query and ('jira' in message_lower or not include_jira_context):
+            include_jira_context = True
+        
         calendar_context = None
         github_context = None
+        jira_context = None
         correlation_context = None
         
         # Fetch calendar context (with caching, ranking, and summarization)
@@ -712,13 +1165,16 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 github_context_parts = []
                 
                 # Always get user info
+                username = None  # Initialize to avoid UnboundLocalError
                 try:
                     user_info = github_client.get_user_info()
                     username = user_info.get('login', 'Unknown')
                     github_context_parts.append(f"GITHUB USER: {username}")
                     github_context_parts.append("")
-                except Exception:
-                    pass
+                except Exception as e:
+                    # If we can't get user info, we'll try to continue but may have limited functionality
+                    logger.warning(f"Could not get GitHub user info: {e}")
+                    username = None
                 
                 # Check what type of GitHub data is needed
                 needs_repos = any(keyword in message_lower for keyword in 
@@ -783,97 +1239,106 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 # Fetch repositories if needed
                 if needs_repos:
                     try:
-                        repos = github_client.get_repositories(username, per_page=30)
-                        github_context_parts.append(f"REPOSITORIES ({len(repos)} total):")
-                        github_context_parts.append("-" * 50)
-                        for i, repo in enumerate(repos, 1):
-                            full_name = repo.get('full_name', 'Unknown')
-                            description = repo.get('description', '') or 'No description'
-                            stars = repo.get('stargazers_count', 0)
-                            language = repo.get('language', 'N/A')
-                            is_private = repo.get('private', False)
-                            updated = repo.get('updated_at', '')
-                            
-                            repo_line = f"  {i}. {full_name}"
-                            if is_private:
-                                repo_line += " [PRIVATE]"
-                            repo_line += f" | ⭐ {stars} | {language}"
-                            github_context_parts.append(repo_line)
-                            github_context_parts.append(f"     Description: {description[:100]}")
-                            if updated:
-                                try:
-                                    updated_dt = datetime.fromisoformat(updated.replace('Z', '+00:00'))
-                                    github_context_parts.append(f"     Last updated: {updated_dt.strftime('%Y-%m-%d')}")
-                                except:
-                                    pass
-                            github_context_parts.append(f"     URL: {repo.get('html_url', '')}")
-                            github_context_parts.append("")
+                        if not username:
+                            github_context_parts.append("Error: Could not determine GitHub username. Please ensure GitHub authentication is configured.")
+                        else:
+                            repos = github_client.get_repositories(username, per_page=30)
+                            github_context_parts.append(f"REPOSITORIES ({len(repos)} total):")
+                            github_context_parts.append("-" * 50)
+                            for i, repo in enumerate(repos, 1):
+                                full_name = repo.get('full_name', 'Unknown')
+                                description = repo.get('description', '') or 'No description'
+                                stars = repo.get('stargazers_count', 0)
+                                language = repo.get('language', 'N/A')
+                                is_private = repo.get('private', False)
+                                updated = repo.get('updated_at', '')
+                                
+                                repo_line = f"  {i}. {full_name}"
+                                if is_private:
+                                    repo_line += " [PRIVATE]"
+                                repo_line += f" | ⭐ {stars} | {language}"
+                                github_context_parts.append(repo_line)
+                                github_context_parts.append(f"     Description: {description[:100]}")
+                                if updated:
+                                    try:
+                                        updated_dt = datetime.fromisoformat(updated.replace('Z', '+00:00'))
+                                        github_context_parts.append(f"     Last updated: {updated_dt.strftime('%Y-%m-%d')}")
+                                    except:
+                                        pass
+                                github_context_parts.append(f"     URL: {repo.get('html_url', '')}")
+                                github_context_parts.append("")
                     except Exception as e:
                         github_context_parts.append(f"Error fetching repositories: {str(e)}")
                 
                 # Fetch issues if needed (for user's repos)
                 if needs_issues:
                     try:
-                        repos = github_client.get_repositories(username, per_page=10)
-                        all_issues = []
-                        for repo in repos[:5]:  # Check top 5 repos
-                            owner = repo.get('owner', {}).get('login', username)
-                            repo_name = repo.get('name', '')
-                            try:
-                                issues = github_client.get_issues(owner, repo_name, state='open', per_page=10)
-                                for issue in issues:
-                                    issue['repo'] = repo.get('full_name', 'Unknown')
-                                all_issues.extend(issues)
-                            except Exception:
-                                continue
-                        
-                        if all_issues:
-                            github_context_parts.append(f"OPEN ISSUES ({len(all_issues)} total):")
-                            github_context_parts.append("-" * 50)
-                            for i, issue in enumerate(all_issues[:20], 1):  # Limit to 20
-                                title = issue.get('title', 'Untitled')
-                                number = issue.get('number', '?')
-                                repo_name = issue.get('repo', 'Unknown')
-                                assignees = [a.get('login', '') for a in issue.get('assignees', [])]
-                                labels = [l.get('name', '') for l in issue.get('labels', [])]
-                                
-                                github_context_parts.append(f"  {i}. #{number} in {repo_name}: {title}")
-                                if assignees:
-                                    github_context_parts.append(f"     Assignees: {', '.join(assignees)}")
-                                if labels:
-                                    github_context_parts.append(f"     Labels: {', '.join(labels)}")
-                                github_context_parts.append("")
+                        if not username:
+                            github_context_parts.append("Error: Could not determine GitHub username. Please ensure GitHub authentication is configured.")
+                        else:
+                            repos = github_client.get_repositories(username, per_page=10)
+                            all_issues = []
+                            for repo in repos[:5]:  # Check top 5 repos
+                                owner = repo.get('owner', {}).get('login', username)
+                                repo_name = repo.get('name', '')
+                                try:
+                                    issues = github_client.get_issues(owner, repo_name, state='open', per_page=10)
+                                    for issue in issues:
+                                        issue['repo'] = repo.get('full_name', 'Unknown')
+                                    all_issues.extend(issues)
+                                except Exception:
+                                    continue
+                            
+                            if all_issues:
+                                github_context_parts.append(f"OPEN ISSUES ({len(all_issues)} total):")
+                                github_context_parts.append("-" * 50)
+                                for i, issue in enumerate(all_issues[:20], 1):  # Limit to 20
+                                    title = issue.get('title', 'Untitled')
+                                    number = issue.get('number', '?')
+                                    repo_name = issue.get('repo', 'Unknown')
+                                    assignees = [a.get('login', '') for a in issue.get('assignees', [])]
+                                    labels = [l.get('name', '') for l in issue.get('labels', [])]
+                                    
+                                    github_context_parts.append(f"  {i}. #{number} in {repo_name}: {title}")
+                                    if assignees:
+                                        github_context_parts.append(f"     Assignees: {', '.join(assignees)}")
+                                    if labels:
+                                        github_context_parts.append(f"     Labels: {', '.join(labels)}")
+                                    github_context_parts.append("")
                     except Exception as e:
                         github_context_parts.append(f"Error fetching issues: {str(e)}")
                 
                 # Fetch PRs if needed
                 if needs_prs:
                     try:
-                        repos = github_client.get_repositories(username, per_page=10)
-                        all_prs = []
-                        for repo in repos[:5]:  # Check top 5 repos
-                            owner = repo.get('owner', {}).get('login', username)
-                            repo_name = repo.get('name', '')
-                            try:
-                                prs = github_client.get_pull_requests(owner, repo_name, state='open', per_page=10)
-                                for pr in prs:
-                                    pr['repo'] = repo.get('full_name', 'Unknown')
-                                all_prs.extend(prs)
-                            except Exception:
-                                continue
-                        
-                        if all_prs:
-                            github_context_parts.append(f"OPEN PULL REQUESTS ({len(all_prs)} total):")
-                            github_context_parts.append("-" * 50)
-                            for i, pr in enumerate(all_prs[:20], 1):  # Limit to 20
-                                title = pr.get('title', 'Untitled')
-                                number = pr.get('number', '?')
-                                repo_name = pr.get('repo', 'Unknown')
-                                author = pr.get('user', {}).get('login', 'unknown')
-                                
-                                github_context_parts.append(f"  {i}. #{number} in {repo_name}: {title}")
-                                github_context_parts.append(f"     Author: {author}")
-                                github_context_parts.append("")
+                        if not username:
+                            github_context_parts.append("Error: Could not determine GitHub username. Please ensure GitHub authentication is configured.")
+                        else:
+                            repos = github_client.get_repositories(username, per_page=10)
+                            all_prs = []
+                            for repo in repos[:5]:  # Check top 5 repos
+                                owner = repo.get('owner', {}).get('login', username)
+                                repo_name = repo.get('name', '')
+                                try:
+                                    prs = github_client.get_pull_requests(owner, repo_name, state='open', per_page=10)
+                                    for pr in prs:
+                                        pr['repo'] = repo.get('full_name', 'Unknown')
+                                    all_prs.extend(prs)
+                                except Exception:
+                                    continue
+                            
+                            if all_prs:
+                                github_context_parts.append(f"OPEN PULL REQUESTS ({len(all_prs)} total):")
+                                github_context_parts.append("-" * 50)
+                                for i, pr in enumerate(all_prs[:20], 1):  # Limit to 20
+                                    title = pr.get('title', 'Untitled')
+                                    number = pr.get('number', '?')
+                                    repo_name = pr.get('repo', 'Unknown')
+                                    author = pr.get('user', {}).get('login', 'unknown')
+                                    
+                                    github_context_parts.append(f"  {i}. #{number} in {repo_name}: {title}")
+                                    github_context_parts.append(f"     Author: {author}")
+                                    github_context_parts.append("")
                     except Exception as e:
                         github_context_parts.append(f"Error fetching pull requests: {str(e)}")
                 
@@ -901,10 +1366,10 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                             potential_repos = [w for w in words if w.lower() not in common_words and 
                                              ('-' in w or '_' in w or len(w) > 5)]
                             
-                            if potential_repos:
-                                # Use the first potential repo name
-                                repo_name = potential_repos[0]
-                                repo_match = (username, repo_name)
+                        if potential_repos and username:
+                            # Use the first potential repo name
+                            repo_name = potential_repos[0]
+                            repo_match = (username, repo_name)
                         
                         if repo_match:
                             repo_owner, repo_name = repo_match
@@ -941,88 +1406,94 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                                 github_context_parts.append(f"No commits found for {repo_owner}/{repo_name}.")
                         else:
                             # Fetch commits from recent repos
-                            repos = github_client.get_repositories(username, per_page=5)
-                            all_commits = []
-                            for repo in repos[:3]:  # Check top 3 repos
-                                owner = repo.get('owner', {}).get('login', username)
-                                repo_name = repo.get('name', '')
-                                try:
-                                    commits = github_client.get_commits(owner, repo_name, per_page=5)
-                                    for commit in commits:
-                                        commit['repo'] = repo.get('full_name', 'Unknown')
-                                    all_commits.extend(commits)
-                                except Exception:
-                                    continue
-                            
-                            if all_commits:
-                                github_context_parts.append(f"RECENT COMMITS ({len(all_commits)} total):")
-                                github_context_parts.append("-" * 50)
-                                for i, commit in enumerate(all_commits[:20], 1):  # Limit to 20
-                                    sha = commit.get('sha', '')[:7] if commit.get('sha') else 'unknown'
-                                    message_text = commit.get('commit', {}).get('message', 'No message')
-                                    message_first_line = message_text.split('\n')[0][:80]
-                                    repo_name = commit.get('repo', 'Unknown')
-                                    author = commit.get('commit', {}).get('author', {}).get('name', 'unknown')
-                                    
-                                    github_context_parts.append(f"  {i}. {sha} in {repo_name}: {message_first_line}")
-                                    github_context_parts.append(f"     Author: {author}")
-                                    github_context_parts.append("")
+                            if not username:
+                                github_context_parts.append("Error: Could not determine GitHub username. Please ensure GitHub authentication is configured.")
+                            else:
+                                repos = github_client.get_repositories(username, per_page=5)
+                                all_commits = []
+                                for repo in repos[:3]:  # Check top 3 repos
+                                    owner = repo.get('owner', {}).get('login', username)
+                                    repo_name = repo.get('name', '')
+                                    try:
+                                        commits = github_client.get_commits(owner, repo_name, per_page=5)
+                                        for commit in commits:
+                                            commit['repo'] = repo.get('full_name', 'Unknown')
+                                        all_commits.extend(commits)
+                                    except Exception:
+                                        continue
+                                
+                                if all_commits:
+                                    github_context_parts.append(f"RECENT COMMITS ({len(all_commits)} total):")
+                                    github_context_parts.append("-" * 50)
+                                    for i, commit in enumerate(all_commits[:20], 1):  # Limit to 20
+                                        sha = commit.get('sha', '')[:7] if commit.get('sha') else 'unknown'
+                                        message_text = commit.get('commit', {}).get('message', 'No message')
+                                        message_first_line = message_text.split('\n')[0][:80]
+                                        repo_name = commit.get('repo', 'Unknown')
+                                        author = commit.get('commit', {}).get('author', {}).get('name', 'unknown')
+                                        
+                                        github_context_parts.append(f"  {i}. {sha} in {repo_name}: {message_first_line}")
+                                        github_context_parts.append(f"     Author: {author}")
+                                        github_context_parts.append("")
                     except Exception as e:
                         github_context_parts.append(f"Error fetching commits: {str(e)}")
                 
                 # Fetch deployments if needed
                 if needs_deployments:
                     try:
-                        all_deployments = github_client.get_all_deployments(username, per_repo=10)
-                        
-                        if all_deployments:
-                            total_deployments = sum(len(deploys) for deploys in all_deployments.values())
-                            github_context_parts.append(f"DEPLOYMENTS ({total_deployments} total across {len(all_deployments)} repositories):")
-                            github_context_parts.append("-" * 50)
-                            
-                            for repo_name, deployments in all_deployments.items():
-                                github_context_parts.append(f"\n{repo_name}:")
-                                for i, deployment in enumerate(deployments, 1):
-                                    deployment_id = deployment.get('id', '?')
-                                    environment = deployment.get('environment', 'unknown')
-                                    ref = deployment.get('ref', 'unknown')
-                                    sha = deployment.get('sha', '')[:7] if deployment.get('sha') else 'unknown'
-                                    creator = deployment.get('creator', {}).get('login', 'unknown')
-                                    created_at = deployment.get('created_at', '')
-                                    
-                                    # Get latest status
-                                    latest_status = deployment.get('latest_status', {})
-                                    status_state = latest_status.get('state', 'unknown') if latest_status else 'pending'
-                                    
-                                    # Status icons
-                                    status_icons = {
-                                        'success': '✅',
-                                        'failure': '❌',
-                                        'pending': '⏳',
-                                        'in_progress': '🔄',
-                                        'queued': '⏸️',
-                                        'error': '⚠️'
-                                    }
-                                    status_icon = status_icons.get(status_state, '❓')
-                                    
-                                    github_context_parts.append(f"  {i}. Deployment #{deployment_id} - {status_icon} {status_state.upper()}")
-                                    github_context_parts.append(f"     Environment: {environment}")
-                                    github_context_parts.append(f"     Branch: {ref} (commit: {sha})")
-                                    github_context_parts.append(f"     Created by: {creator}")
-                                    if created_at:
-                                        try:
-                                            created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                                            github_context_parts.append(f"     Created: {created_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-                                        except:
-                                            pass
-                                    
-                                    # Add deployment URL if available
-                                    if deployment.get('url'):
-                                        github_context_parts.append(f"     URL: {deployment.get('url')}")
-                                    
-                                    github_context_parts.append("")
+                        if not username:
+                            github_context_parts.append("Error: Could not determine GitHub username. Please ensure GitHub authentication is configured.")
                         else:
-                            github_context_parts.append("No deployments found.")
+                            all_deployments = github_client.get_all_deployments(username, per_repo=10)
+                            
+                            if all_deployments:
+                                total_deployments = sum(len(deploys) for deploys in all_deployments.values())
+                                github_context_parts.append(f"DEPLOYMENTS ({total_deployments} total across {len(all_deployments)} repositories):")
+                                github_context_parts.append("-" * 50)
+                                
+                                for repo_name, deployments in all_deployments.items():
+                                    github_context_parts.append(f"\n{repo_name}:")
+                                    for i, deployment in enumerate(deployments, 1):
+                                        deployment_id = deployment.get('id', '?')
+                                        environment = deployment.get('environment', 'unknown')
+                                        ref = deployment.get('ref', 'unknown')
+                                        sha = deployment.get('sha', '')[:7] if deployment.get('sha') else 'unknown'
+                                        creator = deployment.get('creator', {}).get('login', 'unknown')
+                                        created_at = deployment.get('created_at', '')
+                                        
+                                        # Get latest status
+                                        latest_status = deployment.get('latest_status', {})
+                                        status_state = latest_status.get('state', 'unknown') if latest_status else 'pending'
+                                        
+                                        # Status icons
+                                        status_icons = {
+                                            'success': '✅',
+                                            'failure': '❌',
+                                            'pending': '⏳',
+                                            'in_progress': '🔄',
+                                            'queued': '⏸️',
+                                            'error': '⚠️'
+                                        }
+                                        status_icon = status_icons.get(status_state, '❓')
+                                        
+                                        github_context_parts.append(f"  {i}. Deployment #{deployment_id} - {status_icon} {status_state.upper()}")
+                                        github_context_parts.append(f"     Environment: {environment}")
+                                        github_context_parts.append(f"     Branch: {ref} (commit: {sha})")
+                                        github_context_parts.append(f"     Created by: {creator}")
+                                        if created_at:
+                                            try:
+                                                created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                                github_context_parts.append(f"     Created: {created_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                                            except:
+                                                pass
+                                        
+                                        # Add deployment URL if available
+                                        if deployment.get('url'):
+                                            github_context_parts.append(f"     URL: {deployment.get('url')}")
+                                        
+                                        github_context_parts.append("")
+                            else:
+                                github_context_parts.append("No deployments found.")
                     except Exception as e:
                         github_context_parts.append(f"Error fetching deployments: {str(e)}")
                 
@@ -1044,7 +1515,295 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
             except Exception as e:
                 github_context = f"Note: Could not fetch GitHub context: {str(e)}"
         
-        # Multi-source correlation (if both calendar and GitHub data available)
+        # Fetch Jira context if requested
+        if include_jira_context:
+            try:
+                initialize_jira_client()
+                jira_context_parts = []
+                
+                # Always include current user info in Jira context (so AI knows "who you are")
+                try:
+                    current_user = jira_client.get_current_user()
+                    user_email = current_user.get('emailAddress', jira_client.email)
+                    user_name = current_user.get('displayName', user_email)
+                    user_account_id = current_user.get('accountId', 'unknown')
+                    
+                    jira_context_parts.append("JIRA USER INFORMATION:")
+                    jira_context_parts.append("-" * 50)
+                    jira_context_parts.append(f"Authenticated User: {user_name}")
+                    jira_context_parts.append(f"Email: {user_email}")
+                    jira_context_parts.append(f"Account ID: {user_account_id}")
+                    jira_context_parts.append("")
+                    jira_context_parts.append("(This is the account associated with your JIRA_API_TOKEN)")
+                    jira_context_parts.append("When querying for 'your' issues, this is the user being checked.")
+                    jira_context_parts.append("")
+                except Exception as e:
+                    # If we can't get user info, use email from config
+                    jira_context_parts.append("JIRA USER INFORMATION:")
+                    jira_context_parts.append("-" * 50)
+                    jira_context_parts.append(f"Email (from config): {jira_client.email}")
+                    jira_context_parts.append("(Could not fetch full user info from Jira API)")
+                    jira_context_parts.append("")
+                
+                # Check what type of Jira data is needed
+                needs_jira_issues = any(keyword in message_lower for keyword in 
+                                      ['jira', 'issue', 'issues', 'ticket', 'tickets', 'task', 'tasks', 'bug', 'bugs'])
+                needs_jira_projects = any(keyword in message_lower for keyword in 
+                                        ['project', 'projects', 'jira project'])
+                needs_jira_sprints = any(keyword in message_lower for keyword in 
+                                       ['sprint', 'sprints', 'agile'])
+                needs_user_info = any(keyword in message_lower for keyword in 
+                                     ['who am i', 'who are you', 'my account', 'my user', 'my identity', 'authenticated', 'current user', 'who is'])
+                
+                # Fetch user assigned issues
+                if needs_jira_issues:
+                    try:
+                        issues = None
+                        # Extract username from email (e.g., "aupragathii@tamu.edu" -> "aupragathii")
+                        username = user_email.split('@')[0] if '@' in user_email else user_email
+                        
+                        # Try multiple approaches in order of reliability:
+                        # 1. Try with accountId first (most reliable - unique identifier)
+                        if user_account_id and user_account_id != 'unknown':
+                            try:
+                                issues = jira_client.get_user_assigned_issues_by_account_id(user_account_id, limit=10)
+                                if issues:
+                                    jira_context_parts.append(f"✅ Found issues using accountId: {user_account_id}")
+                            except Exception as e:
+                                logger.debug(f"AccountId query failed: {e}")
+                        
+                        # 2. Try with username (since Jira stores assignee as username)
+                        if not issues:
+                            issues = jira_client.get_user_assigned_issues(email=username, limit=10, include_resolved=False)
+                        
+                        # 3. If no unresolved, try with username including resolved
+                        if not issues:
+                            issues = jira_client.get_user_assigned_issues(email=username, limit=10, include_resolved=True)
+                        
+                        # 4. Try with full email
+                        if not issues:
+                            issues = jira_client.get_user_assigned_issues(email=user_email, limit=10, include_resolved=True)
+                        
+                        # 5. Try with currentUser() (might work better)
+                        if not issues:
+                            issues = jira_client.get_user_assigned_issues(limit=10, include_resolved=True)
+                        
+                        # 6. Last resort: Direct JQL queries with different formats
+                        if not issues:
+                            test_queries = [
+                                f'assignee = "{username}" ORDER BY updated DESC',
+                                f'assignee = "{user_email}" ORDER BY updated DESC',
+                                f'assignee = {username} ORDER BY updated DESC',  # Without quotes
+                            ]
+                            if user_account_id and user_account_id != 'unknown':
+                                test_queries.extend([
+                                    f'assignee = "{user_account_id}" ORDER BY updated DESC',
+                                    f'assignee = {user_account_id} ORDER BY updated DESC',
+                                ])
+                            
+                            for jql in test_queries:
+                                try:
+                                    issues = jira_client.get_issues(jql, max_results=10)
+                                    if issues:
+                                        break
+                                except:
+                                    continue
+                        
+                        if issues:
+                            jira_context_parts.append(f"ASSIGNED JIRA ISSUES ({len(issues)} total):")
+                            jira_context_parts.append("-" * 50)
+                            for i, issue in enumerate(issues[:10], 1):
+                                key = issue.get('key', 'Unknown')
+                                fields = issue.get('fields', {})
+                                summary = fields.get('summary', 'No summary')
+                                status = fields.get('status', {}).get('name', 'Unknown')
+                                priority = fields.get('priority', {}).get('name', 'None')
+                                project = fields.get('project', {}).get('name', 'Unknown')
+                                assignee = fields.get('assignee', {})
+                                assignee_email = assignee.get('emailAddress', 'Unknown') if assignee else 'Unassigned'
+                                
+                                jira_context_parts.append(f"  {i}. {key}: {summary}")
+                                jira_context_parts.append(f"     Status: {status} | Priority: {priority} | Project: {project}")
+                                jira_context_parts.append(f"     Assignee Email: {assignee_email}")
+                                jira_context_parts.append("")
+                        else:
+                            # No issues found - provide detailed debugging
+                            debug_info = jira_client.get_query_debug_info()
+                            username = user_email.split('@')[0] if '@' in user_email else user_email
+                            
+                            jira_context_parts.append("ASSIGNED JIRA ISSUES: No issues found.")
+                            jira_context_parts.append("")
+                            jira_context_parts.append("🔍 Debugging Information:")
+                            jira_context_parts.append(f"   Authenticated Email: {user_email}")
+                            jira_context_parts.append(f"   Username Extracted: {username}")
+                            jira_context_parts.append(f"   Queries Tried: Both username ('{username}') and email ('{user_email}') formats")
+                            
+                            if debug_info.get('successful_but_empty'):
+                                jira_context_parts.append(f"   Queries Executed: {len(debug_info.get('successful_but_empty', []))} queries ran successfully but returned no results")
+                                jira_context_parts.append("   This suggests:")
+                                jira_context_parts.append("   1. The issue might be assigned to a different username/email")
+                                jira_context_parts.append("   2. The issue might have a status that was filtered out")
+                                jira_context_parts.append("   3. There might be a case-sensitivity issue")
+                            
+                            jira_context_parts.append("")
+                            jira_context_parts.append("💡 Try These Solutions:")
+                            jira_context_parts.append(f"   1. Query with username: get_jira_issues('assignee = \"{username}\"')")
+                            jira_context_parts.append(f"   2. Query with email: get_jira_issues('assignee = \"{user_email}\"')")
+                            jira_context_parts.append(f"   3. Try with currentUser(): get_jira_issues('assignee = currentUser()')")
+                            jira_context_parts.append("   4. Check the issue in Jira - verify the exact assignee format (username vs email)")
+                            jira_context_parts.append(f"   5. Note: Jira often stores assignee as username ('{username}') not email")
+                    except Exception as e:
+                        error_msg = str(e)
+                        jira_context_parts.append(f"❌ Error fetching assigned issues: {error_msg}")
+                        logger.error(f"Error fetching Jira assigned issues: {e}", exc_info=True)
+                        if "410" in error_msg or "Gone" in error_msg:
+                            jira_context_parts.append("💡 This is a 410 Gone error. See JIRA_TROUBLESHOOTING.md for help.")
+                
+                # Fetch projects if needed
+                if needs_jira_projects:
+                    try:
+                        projects = jira_client.get_projects()
+                        if projects:
+                            jira_context_parts.append(f"JIRA PROJECTS ({len(projects)} total):")
+                            jira_context_parts.append("-" * 50)
+                            for i, project in enumerate(projects[:10], 1):
+                                key = project.get('key', 'Unknown')
+                                name = project.get('name', 'Unknown')
+                                jira_context_parts.append(f"  {i}. {key}: {name}")
+                                jira_context_parts.append("")
+                        else:
+                            jira_context_parts.append("JIRA PROJECTS: No projects found.")
+                    except Exception as e:
+                        error_msg = str(e)
+                        jira_context_parts.append(f"❌ Error fetching projects: {error_msg}")
+                        logger.error(f"Error fetching Jira projects: {e}", exc_info=True)
+                        if "410" in error_msg or "Gone" in error_msg:
+                            jira_context_parts.append("💡 This is a 410 Gone error. See JIRA_TROUBLESHOOTING.md for help.")
+                
+                # If no specific data requested, fetch assigned issues by default
+                if not needs_jira_issues and not needs_jira_projects and not needs_jira_sprints:
+                    try:
+                        # Extract username from email (e.g., "aupragathii@tamu.edu" -> "aupragathii")
+                        username = user_email.split('@')[0] if '@' in user_email else user_email
+                        
+                        # Try with username first (since Jira stores assignee as username)
+                        issues = jira_client.get_user_assigned_issues(email=username, limit=5, include_resolved=False)
+                        if not issues:
+                            issues = jira_client.get_user_assigned_issues(email=username, limit=5, include_resolved=True)
+                        # Try with full email
+                        if not issues:
+                            issues = jira_client.get_user_assigned_issues(email=user_email, limit=5, include_resolved=True)
+                        # Try with currentUser()
+                        if not issues:
+                            issues = jira_client.get_user_assigned_issues(limit=5, include_resolved=True)
+                        # Last resort: Direct JQL query
+                        if not issues:
+                            try:
+                                direct_jql = f'assignee = "{username}" ORDER BY updated DESC'
+                                issues = jira_client.get_issues(direct_jql, max_results=5)
+                            except:
+                                pass
+                        
+                        if issues:
+                            jira_context_parts.append(f"ASSIGNED JIRA ISSUES ({len(issues)} total):")
+                            jira_context_parts.append("-" * 50)
+                            for i, issue in enumerate(issues[:5], 1):
+                                key = issue.get('key', 'Unknown')
+                                fields = issue.get('fields', {})
+                                summary = fields.get('summary', 'No summary')
+                                status = fields.get('status', {}).get('name', 'Unknown')
+                                assignee = fields.get('assignee', {})
+                                assignee_email = assignee.get('emailAddress', 'Unknown') if assignee else 'Unassigned'
+                                jira_context_parts.append(f"  {i}. {key}: {summary} [{status}]")
+                                jira_context_parts.append(f"     Assignee: {assignee_email}")
+                                jira_context_parts.append("")
+                        else:
+                            # Get current user info for debugging
+                            try:
+                                current_user = jira_client.get_current_user()
+                                auth_email = current_user.get('emailAddress', jira_client.email)
+                            except:
+                                auth_email = jira_client.email
+                            
+                            jira_context_parts.append("ASSIGNED JIRA ISSUES: No issues found.")
+                            jira_context_parts.append(f"   (Checked for: {auth_email})")
+                            jira_context_parts.append("   💡 Tip: If you have issues assigned to a different email,")
+                            jira_context_parts.append("      try querying with that specific email address.")
+                    except Exception as e:
+                        error_msg = str(e)
+                        jira_context_parts.append(f"Error fetching assigned issues: {error_msg}")
+                        logger.error(f"Error fetching Jira assigned issues (default): {e}", exc_info=True)
+                
+                if jira_context_parts:
+                    jira_context = "\n".join(jira_context_parts)
+                else:
+                    jira_context = "No Jira data available. This may indicate:\n1. Jira connection issue (check credentials)\n2. No issues found\n3. API endpoint errors\n\n💡 TIP: Run 'python test_jira_connection.py' to diagnose."
+                    
+            except Exception as e:
+                jira_context = f"Note: Could not fetch Jira context: {str(e)}"
+        
+        # Multi-source correlation
+        correlation_context = None
+        
+        # GitHub-Jira correlation (commits mentioning Jira issues)
+        if include_github_context and include_jira_context and github_context and jira_context:
+            try:
+                initialize_github_client()
+                initialize_jira_client()
+                
+                username = None
+                try:
+                    user_info = github_client.get_user_info()
+                    username = user_info.get('login', 'Unknown')
+                except:
+                    pass
+                
+                if username:
+                    # Get recent commits to find Jira issue references
+                    repos = context_cache.get_github_data('repos', username=username)
+                    if repos is None:
+                        repos = github_client.get_repositories(username, per_page=10)
+                        context_cache.set_github_data('repos', repos, username=username)
+                    
+                    # Extract Jira issue keys from Jira context
+                    jira_keys = re.findall(r'\b([A-Z]+-\d+)\b', jira_context)
+                    
+                    # Get commits and check for Jira references
+                    commit_jira_links = []
+                    for repo in repos[:5]:
+                        owner = repo.get('owner', {}).get('login', username)
+                        repo_name = repo.get('name', '')
+                        try:
+                            commits = github_client.get_commits(owner, repo_name, per_page=10)
+                            for commit in commits:
+                                commit_msg = commit.get('commit', {}).get('message', '')
+                                # Look for Jira issue keys in commit message
+                                commit_keys = re.findall(r'\b([A-Z]+-\d+)\b', commit_msg)
+                                if commit_keys:
+                                    for key in commit_keys:
+                                        if key in jira_keys:
+                                            commit_jira_links.append({
+                                                'commit': commit.get('sha', '')[:7],
+                                                'message': commit_msg[:100],
+                                                'jira_key': key,
+                                                'repo': f"{owner}/{repo_name}",
+                                                'date': commit.get('commit', {}).get('author', {}).get('date', '')
+                                            })
+                        except:
+                            continue
+                    
+                    if commit_jira_links:
+                        correlation_parts = ["GITHUB-JIRA CORRELATION:"]
+                        correlation_parts.append("-" * 50)
+                        correlation_parts.append("Commits referencing Jira issues:")
+                        for link in commit_jira_links[:10]:
+                            correlation_parts.append(f"  • {link['jira_key']}: Commit {link['commit']} in {link['repo']}")
+                            correlation_parts.append(f"    Message: {link['message']}")
+                        correlation_context = "\n".join(correlation_parts)
+            except Exception as e:
+                logger.debug(f"GitHub-Jira correlation failed: {e}")
+        
+        # Calendar-GitHub correlation (if both available)
         if include_calendar_context and include_github_context and calendar_context and github_context:
             try:
                 # Get raw data for correlation (use cached or fetch minimal set)
@@ -1084,19 +1843,27 @@ def chat(message: str, include_calendar_context: bool = True, include_github_con
                 correlations = context_correlator.correlate_calendar_github(
                     events, repos, issues, prs
                 )
-                correlation_context = context_correlator.format_correlations(correlations)
+                calendar_github_correlation = context_correlator.format_correlations(correlations)
+                
+                # Combine with existing correlation context
+                if correlation_context and calendar_github_correlation:
+                    correlation_context = correlation_context + "\n\n" + calendar_github_correlation
+                elif calendar_github_correlation:
+                    correlation_context = calendar_github_correlation
             except Exception as e:
                 # Silently fail correlation - not critical
-                correlation_context = None
+                logger.debug(f"Calendar-GitHub correlation failed: {e}")
         
         # Combine and compress contexts
         combined_context = None
-        if calendar_context or github_context or correlation_context:
+        if calendar_context or github_context or jira_context or correlation_context:
             context_parts = []
             if calendar_context:
                 context_parts.append(calendar_context)
             if github_context:
                 context_parts.append(github_context)
+            if jira_context:
+                context_parts.append(jira_context)
             if correlation_context:
                 context_parts.append(correlation_context)
             

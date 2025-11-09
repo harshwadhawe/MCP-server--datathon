@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Project Management Assistant Dashboard
-A lightweight dashboard integrating GitHub and Google Calendar for project management.
+A lightweight dashboard integrating GitHub, Google Calendar, and Jira for project management.
 """
 
 import streamlit as st
@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from src.server import chat
 from src.calendar_client import CalendarClient
 from src.github_client import GitHubClient
+from src.jira_client import JiraClient
 from src.query_analyzer import QueryAnalyzer
 
 # Page configuration
@@ -66,6 +67,13 @@ st.markdown("""
         margin-bottom: 0.5rem;
         border-left: 3px solid #28a745;
     }
+    .jira-card {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 0.5rem;
+        border-left: 3px solid #0052CC;
+    }
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
     }
@@ -83,8 +91,11 @@ if "calendar_client" not in st.session_state:
 if "github_client" not in st.session_state:
     st.session_state.github_client = None
 
+if "jira_client" not in st.session_state:
+    st.session_state.jira_client = None
+
 def initialize_clients():
-    """Initialize calendar and GitHub clients."""
+    """Initialize calendar, GitHub, and Jira clients."""
     try:
         if st.session_state.calendar_client is None:
             credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "config/credentials.json")
@@ -106,6 +117,22 @@ def initialize_clients():
             st.session_state.github_client = GitHubClient()
     except Exception as e:
         st.session_state.github_client = None
+        # Don't show error to user, just silently fail
+    
+    try:
+        if st.session_state.jira_client is None:
+            base_url = os.getenv("JIRA_URL")
+            email = os.getenv("JIRA_EMAIL")
+            api_token = os.getenv("JIRA_API_TOKEN")
+            
+            if base_url and email and api_token:
+                st.session_state.jira_client = JiraClient(
+                    base_url=base_url,
+                    email=email,
+                    api_token=api_token
+                )
+    except Exception as e:
+        st.session_state.jira_client = None
         # Don't show error to user, just silently fail
 
 def format_time(dt_str):
@@ -202,6 +229,25 @@ def get_github_summary():
     except Exception as e:
         return None
 
+def get_jira_summary():
+    """Get Jira activity summary."""
+    if st.session_state.jira_client is None:
+        return None
+    
+    try:
+        # Get assigned issues
+        issues = st.session_state.jira_client.get_user_assigned_issues(limit=10)
+        
+        # Get projects
+        projects = st.session_state.jira_client.get_projects()
+        
+        return {
+            'assigned_issues': issues,
+            'projects': projects[:10] if projects else []
+        }
+    except Exception as e:
+        return None
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">📊 Project Management <span class="mcp-highlight">MCP Server</span> Assistant</h1>', unsafe_allow_html=True)
@@ -216,6 +262,7 @@ def main():
         if st.button("🔄 Refresh Data", use_container_width=True):
             st.session_state.calendar_client = None
             st.session_state.github_client = None
+            st.session_state.jira_client = None
             initialize_clients()
             st.rerun()
         
@@ -225,23 +272,27 @@ def main():
         st.subheader("🔌 Connections")
         calendar_status = "✅ Connected" if st.session_state.calendar_client else "❌ Not Connected"
         github_status = "✅ Connected" if st.session_state.github_client else "❌ Not Connected"
+        jira_status = "✅ Connected" if st.session_state.jira_client else "❌ Not Connected"
         
         st.write(f"**Calendar:** {calendar_status}")
         st.write(f"**GitHub:** {github_status}")
+        st.write(f"**Jira:** {jira_status}")
         
         if not st.session_state.calendar_client:
             st.info("💡 Configure Google Calendar credentials to enable calendar features.")
         if not st.session_state.github_client:
             st.info("💡 Set GITHUB_TOKEN in .env to enable GitHub features.")
+        if not st.session_state.jira_client:
+            st.info("💡 Set JIRA_URL, JIRA_EMAIL, and JIRA_API_TOKEN in .env to enable Jira features.")
         
         st.divider()
         
         st.subheader("💬 AI Assistant")
-        st.caption("Ask questions about your projects, schedule, or GitHub activity")
+        st.caption("Ask questions about your projects, schedule, GitHub activity, or Jira issues")
     
     # Main content - AI Assistant only
     st.header("💬 AI Assistant")
-    st.caption("Ask me anything about your projects, schedule, or GitHub activity")
+    st.caption("Ask me anything about your projects, schedule, GitHub activity, or Jira issues")
     
     # Predefined queries organized by category
     st.subheader("📋 Predefined Queries")
@@ -324,6 +375,45 @@ def main():
     
     st.divider()
     
+    # Jira queries
+    st.markdown("#### 🎯 Jira & Issues")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🎫 My assigned issues", use_container_width=True):
+            st.session_state.quick_query = "What Jira issues are assigned to me?"
+            st.rerun()
+        if st.button("📋 Show all projects", use_container_width=True):
+            st.session_state.quick_query = "Show me all my Jira projects"
+            st.rerun()
+        if st.button("🔍 Search issues", use_container_width=True):
+            st.session_state.quick_query = "What are my open Jira issues?"
+            st.rerun()
+    
+    with col2:
+        if st.button("📊 Issue summary", use_container_width=True):
+            st.session_state.quick_query = "Give me a summary of my Jira issues"
+            st.rerun()
+        if st.button("🚀 Active sprints", use_container_width=True):
+            st.session_state.quick_query = "What are my active Jira sprints?"
+            st.rerun()
+        if st.button("⏰ Recent activity", use_container_width=True):
+            st.session_state.quick_query = "Show me recent Jira activity"
+            st.rerun()
+    
+    with col3:
+        if st.button("📈 Project overview", use_container_width=True):
+            st.session_state.quick_query = "Tell me about my Jira projects"
+            st.rerun()
+        if st.button("🐛 High priority issues", use_container_width=True):
+            st.session_state.quick_query = "What are my high priority Jira issues?"
+            st.rerun()
+        if st.button("✅ Completed tasks", use_container_width=True):
+            st.session_state.quick_query = "Show me my completed Jira issues"
+            st.rerun()
+    
+    st.divider()
+    
     # Custom query input
     st.subheader("💭 Custom Query")
     user_input = st.text_input("Enter your question:", placeholder="e.g., What meetings do I have today?")
@@ -332,16 +422,20 @@ def main():
     if user_input:
         with st.spinner("Thinking..."):
             try:
-                # Auto-detect GitHub queries
+                # Auto-detect GitHub and Jira queries
                 message_lower = user_input.lower()
                 include_github = any(keyword in message_lower for keyword in 
                                    ['github', 'repo', 'repository', 'issue', 'pr', 'pull request', 'commit',
                                     'deployment', 'deploy', 'deployed', 'deploying', 'production', 'staging'])
+                include_jira = any(keyword in message_lower for keyword in 
+                                 ['jira', 'ticket', 'tickets', 'task', 'tasks', 'bug', 'bugs', 'sprint', 'sprints',
+                                  'jql', 'project', 'projects', 'assignee', 'assign'])
                 
                 response = chat(
                     message=user_input,
                     include_calendar_context=True,
-                    include_github_context=include_github
+                    include_github_context=include_github,
+                    include_jira_context=include_jira
                 )
                 
                 st.markdown("### Response:")
@@ -361,11 +455,15 @@ def main():
                 include_github = any(keyword in message_lower for keyword in 
                                    ['github', 'repo', 'repository', 'issue', 'pr', 'pull request', 'commit',
                                     'deployment', 'deploy', 'deployed', 'deploying', 'production', 'staging'])
+                include_jira = any(keyword in message_lower for keyword in 
+                                 ['jira', 'ticket', 'tickets', 'task', 'tasks', 'bug', 'bugs', 'sprint', 'sprints',
+                                  'jql', 'project', 'projects', 'assignee', 'assign'])
                 
                 response = chat(
                     message=query,
                     include_calendar_context=True,
-                    include_github_context=include_github
+                    include_github_context=include_github,
+                    include_jira_context=include_jira
                 )
                 
                 st.markdown("### Response:")
